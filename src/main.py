@@ -1,219 +1,201 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Optional, List
+"""
+TEIA Tutor AI Service - Main Application
+FastAPI application for the Intelligent Tutoring System.
+"""
+import time
 from datetime import datetime
-import requests
-import os
-from data_processor import SimpleDataProcessor
-from utils.logger import get_logger, setup_logging, RequestLogger
+from typing import List
 
-# Obtener logger
-logger = get_logger("main")
-http_logger = RequestLogger()
+from fastapi import FastAPI, HTTPException
 
-# Configurar logging
-setup_logging(
-    log_level=os.getenv("LOG_LEVEL", "INFO"),
-    log_file=os.getenv("LOG_FILE", "logs/teia_tutor.log"),
-    enable_json=os.getenv("ENABLE_JSON_LOGS", "false").lower() == "true"
+from config import settings
+from middleware import setup_middlewares
+from models import (
+    QuestionRequest,
+    QuestionResponse,
+    ModuleInfo,
+    HealthResponse,
+    SystemStatus,
 )
+from services.ollama_service import generate_response, check_ollama_health
+from services.rag_retriever import get_rag_retriever
+from utils.logger import get_logger
 
+logger = get_logger("main")
+
+# Initialize FastAPI app
 app = FastAPI(
     title="TEIA Tutor AI Service",
     description="Servicio de Tutoría Inteligente para el curso 'En sus marcas, listos, iRAC!'",
     version="1.0.0"
 )
 
-# Inicializar procesador de datos
-data_processor = SimpleDataProcessor()
+# Setup middlewares (CORS, etc.)
+setup_middlewares(app)
 
-class QuestionRequest(BaseModel):
-    question: str
-    module: Optional[str] = None
-    user_id: Optional[str] = None
 
-class QuestionResponse(BaseModel):
-    answer: str
-    confidence: float
-    sources: List[str]
-    suggested_actions: Optional[List[str]] = None
+# Course modules definition
+COURSE_MODULES = [
+    ModuleInfo(
+        id="caracterizacion",
+        name="Caracterización de la Asignatura",
+        description="Identificación de características y contexto de la asignatura"
+    ),
+    ModuleInfo(
+        id="factores_situacionales",
+        name="Factores Situacionales",
+        description="Análisis del contexto que influye en el diseño curricular"
+    ),
+    ModuleInfo(
+        id="resultados_aprendizaje",
+        name="Resultados de Aprendizaje",
+        description="Diseño de resultados de aprendizaje claros y medibles"
+    ),
+    ModuleInfo(
+        id="actividades_aprendizaje",
+        name="Actividades de Aprendizaje",
+        description="Diseño de actividades centradas en el estudiante"
+    ),
+    ModuleInfo(
+        id="evaluacion",
+        name="Evaluación",
+        description="Estrategias de evaluación formativa y sumativa"
+    ),
+    ModuleInfo(
+        id="secuencia",
+        name="Secuencia del Curso",
+        description="Organización temporal de contenidos y actividades"
+    )
+]
 
-class ModuleInfo(BaseModel):
-    id: str
-    name: str
-    description: str
-
-class SystemStatus(BaseModel):
-    service: str
-    status: str
-    ollama_connected: bool
-    ollama_models: List[str]
-    timestamp: str
-
-def ask_ollama_directly(question: str, context: str = "", module: str = "") -> str:
-    """Llama DIRECTAMENTE a Ollama con prompt especializado"""
-
-    prompt = f"""
-    Eres TEIA, un tutor especializado en diseño curricular de la Universidad El Bosque.
-    Estás apoyando el curso "En sus marcas, listos, iRAC!" para docentes.
-
-    CONTEXTO INSTITUCIONAL:
-    - Universidad El Bosque - Modelo educativo centrado en el estudiante
-    - Enfoque en competencias y resultados de aprendizaje
-    - Metodologías activas de enseñanza
-    - Evaluación formativa y sumativa
-
-    INFORMACIÓN DEL CURSO:
-    {context}
-
-    MÓDULO ACTUAL: {module}
-    PREGUNTA DEL DOCENTE: {question}
-
-    INSTRUCCIONES:
-    1. Responde en ESPAÑOL claro y profesional
-    2. Enfócate en metodologías CENTRADAS EN EL ESTUDIANTE
-    3. Proporciona EJEMPLOS PRÁCTICOS cuando sea posible
-    4. Si no tienes información específica, sugiere consultar los materiales del curso
-    5. Mantén un tono de APOYO y ORIENTACIÓN
-
-    RESPUESTA:
-    """
-
-    try:
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "llama3.1:8b",
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.3,
-                    "top_k": 40,
-                    "top_p": 0.9,
-                    "num_predict": 1000
-                }
-            },
-            timeout=60
-        )
-
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("response", "No se pudo generar respuesta").strip()
-        else:
-            return f"Error en el servicio Ollama: {response.status_code}"
-
-    except Exception as e:
-        logger.error(f"Error conectando con Ollama: {e}")
-        return "Error de conexión con el servicio de IA. Por favor intenta más tarde."
 
 @app.get("/")
 async def root():
+    """Root endpoint - service information."""
     return {
-        "message": "TEIA Tutor AI Service 🎓",
+        "service": "TEIA Tutor AI Service",
         "version": "1.0.0",
         "status": "active"
     }
 
-@app.get("/health")
+
+@app.get("/health", response_model=HealthResponse)
 async def health():
-    return {"status": "healthy", "service": "teia-tutor"}
+    """Health check endpoint - verifies service and Ollama connectivity."""
+    ollama_connected, _ = await check_ollama_health()
+
+    return HealthResponse(
+        status="healthy" if ollama_connected else "degraded",
+        service="teia-tutor",
+        ollama_connected=ollama_connected
+    )
+
 
 @app.get("/status", response_model=SystemStatus)
 async def get_status():
-    """Estado detallado del sistema"""
-    try:
-        ollama_response = requests.get("http://localhost:11434/api/tags", timeout=5)
-        ollama_models = ollama_response.json().get("models", []) if ollama_response.status_code == 200 else []
+    """Detailed system status including available models."""
+    ollama_connected, models = await check_ollama_health()
 
-        return SystemStatus(
-            service="teia-tutor",
-            status="running",
-            ollama_connected=len(ollama_models) > 0,
-            ollama_models=[model["name"] for model in ollama_models],
-            timestamp=datetime.now().isoformat()
-        )
-    except Exception as e:
-        logger.error(f"Error checking status: {e}")
-        return SystemStatus(
-            service="teia-tutor",
-            status="running",
-            ollama_connected=False,
-            ollama_models=[],
-            timestamp=datetime.now().isoformat()
-        )
+    return SystemStatus(
+        service="teia-tutor",
+        status="running",
+        ollama_connected=ollama_connected,
+        ollama_models=models,
+        timestamp=datetime.now().isoformat()
+    )
+
 
 @app.get("/modules", response_model=List[ModuleInfo])
 async def get_modules():
-    """Retorna los módulos disponibles del curso"""
-    modules = [
-        ModuleInfo(
-            id="caracterizacion",
-            name="Caracterización de la Asignatura",
-            description="Identificación de características y contexto de la asignatura"
-        ),
-        ModuleInfo(
-            id="factores_situacionales",
-            name="Factores Situacionales",
-            description="Análisis del contexto que influye en el diseño curricular"
-        ),
-        ModuleInfo(
-            id="resultados_aprendizaje",
-            name="Resultados de Aprendizaje",
-            description="Diseño de resultados de aprendizaje claros y medibles"
-        ),
-        ModuleInfo(
-            id="actividades_aprendizaje",
-            name="Actividades de Aprendizaje",
-            description="Diseño de actividades centradas en el estudiante"
-        ),
-        ModuleInfo(
-            id="evaluacion",
-            name="Evaluación",
-            description="Estrategias de evaluación formativa y sumativa"
-        ),
-        ModuleInfo(
-            id="secuencia",
-            name="Secuencia del Curso",
-            description="Organización temporal de contenidos y actividades"
-        )
-    ]
-    return modules
+    """Returns available course modules."""
+    return COURSE_MODULES
+
 
 @app.post("/ask", response_model=QuestionResponse)
 async def ask_question(request: QuestionRequest):
-    """Endpoint principal para hacer preguntas al tutor"""
-    logger.info(f"Pregunta recibida: {request.question} - Módulo: {request.module}")
+    """
+    Main tutoring endpoint - process questions and return AI-generated answers.
+
+    Uses RAG to retrieve relevant context from indexed course documents,
+    then generates a response using the LLM.
+
+    The response includes tracking metadata (request_id, timestamp, user context)
+    that can be used for future persistence and reporting.
+    """
+    start_time = time.time()
+
+    logger.info(
+        f"Question received - user_id: {request.user_id}, "
+        f"session_id: {request.session_id}, module: {request.module}"
+    )
 
     try:
-        # Obtener contexto específico del módulo
-        context = data_processor.get_context_for_module(request.module or "")
+        # Get RAG retriever
+        retriever = get_rag_retriever()
 
-        # Obtener respuesta de Ollama
-        answer = ask_ollama_directly(
+        # Retrieve relevant context using RAG
+        retrieved_chunks = retriever.retrieve(
+            query=request.question,
+            module=request.module,
+            top_k=3
+        )
+
+        # Get formatted context for LLM
+        context = retriever.get_context_for_query(
+            query=request.question,
+            module=request.module,
+            top_k=3
+        )
+
+        # Extract sources from retrieved chunks
+        sources = list(set(chunk["source"] for chunk in retrieved_chunks))
+        if not sources:
+            sources = ["Contexto general del curso"]
+
+        # Calculate confidence based on retrieval scores
+        if retrieved_chunks:
+            avg_score = sum(c["score"] for c in retrieved_chunks) / len(retrieved_chunks)
+            confidence = min(avg_score + 0.3, 0.95)  # Boost and cap at 0.95
+        else:
+            confidence = 0.5  # Lower confidence without retrieved context
+
+        # Generate response from LLM (async)
+        answer = await generate_response(
             question=request.question,
             context=context,
             module=request.module or "General"
         )
 
+        processing_time_ms = int((time.time() - start_time) * 1000)
+
         return QuestionResponse(
+            # Echo back user context for correlation
+            user_id=request.user_id,
+            session_id=request.session_id,
+            module=request.module,
+            # Response content
             answer=answer,
-            confidence=0.8,
-            sources=["Sistema TEIA - Ollama Integration"],
+            confidence=round(confidence, 2),
+            sources=sources,
             suggested_actions=[
-                "Revisar materiales específicos del módulo",
+                "Revisar los documentos fuente mencionados",
                 "Consultar con tutor humano para casos complejos",
                 "Validar con lineamientos institucionales"
-            ]
+            ],
+            # Metadata
+            model_used=settings.OLLAMA_MODEL,
+            processing_time_ms=processing_time_ms
         )
 
     except Exception as e:
-        logger.error(f"Error procesando pregunta: {e}")
+        logger.error(f"Error processing question: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Error interno del servidor: {str(e)}"
         )
 
+
 if __name__ == "__main__":
     import uvicorn
-    logger.info("🚀 Iniciando TEIA Tutor AI Service...")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    logger.info("Starting TEIA Tutor AI Service...")
+    uvicorn.run(app, host=settings.HOST, port=settings.PORT, log_level="info")

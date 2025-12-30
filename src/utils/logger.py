@@ -200,10 +200,16 @@ class RequestLogger:
         self.logger.log(level, f"📡 HTTP {method} {url} → {status_code} ({response_time:.2f}s)",
                         extra={"extra_data": log_data})
 
-# Configuración por defecto al importar el módulo
-setup_logging(
-    log_level="INFO",
-    log_file="logs/teia_tutor.log",
-    enable_console=True,
-    enable_json=False
-)
+def init_logging():
+    """Initialize logging with settings from config."""
+    from config import settings
+    setup_logging(
+        log_level=settings.LOG_LEVEL,
+        log_file=settings.LOG_FILE,
+        enable_console=True,
+        enable_json=settings.ENABLE_JSON_LOGS
+    )
+
+
+# Initialize logging when module is imported
+init_logging()

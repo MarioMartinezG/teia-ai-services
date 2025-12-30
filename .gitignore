@@ -191,6 +191,29 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# IDE
+.idea/
+
+# Logs
+logs/
+
+# Claude Code settings
+.claude/
+
+# RAG Data (large files, generated indexes)
+data/chroma_db/*
+data/processed/*
+data/raw/pdfs/*
+data/raw/excel/*
+data/raw/articles/*
+
+# Keep directory structure
+!data/chroma_db/.gitkeep
+!data/processed/.gitkeep
+!data/raw/pdfs/.gitkeep
+!data/raw/excel/.gitkeep
+!data/raw/articles/.gitkeep
+
 # PyPI configuration file
 .pypirc
 
