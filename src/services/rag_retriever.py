@@ -2,18 +2,17 @@
 RAG Retriever service for TEIA Tutor.
 Handles semantic search over indexed course content.
 """
-from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import chromadb
 
+from config import settings
 from services.embedding_service import get_embedding_service
 from utils.logger import get_logger
 
 logger = get_logger("rag_retriever")
 
-# ChromaDB path
-CHROMA_DB_PATH = Path(__file__).parent.parent.parent / "data" / "chroma_db"
+# Collection name for ChromaDB
 COLLECTION_NAME = "teia_course_content"
 
 # Default retrieval settings
@@ -41,7 +40,7 @@ class RAGRetriever:
             self._embedding_service = get_embedding_service()
 
             # Initialize ChromaDB client
-            self._client = chromadb.PersistentClient(path=str(CHROMA_DB_PATH))
+            self._client = chromadb.PersistentClient(path=str(settings.CHROMA_DB_PATH))
 
             # Get collection
             self._collection = self._client.get_collection(name=COLLECTION_NAME)
