@@ -34,6 +34,8 @@ class QuestionRequest(BaseModel):
 
 class QuestionResponse(BaseModel):
     """Response model for tutor answers with tracking metadata."""
+    model_config = {"protected_namespaces": ()}
+
     # Tracking fields
     request_id: str = Field(default_factory=generate_uuid)
     timestamp: str = Field(default_factory=get_timestamp)
