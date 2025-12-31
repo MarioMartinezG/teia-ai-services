@@ -140,6 +140,7 @@ La estructura de subdirectorios se crea automáticamente:
 | `OLLAMA_MODEL` | Modelo LLM principal | `qwen2.5:7b-instruct` |
 | `OLLAMA_FALLBACK_MODEL` | Modelo de respaldo | `mistral:7b-instruct` |
 | `OLLAMA_TIMEOUT` | Timeout en segundos | `120` |
+| `OLLAMA_MAX_TOKENS` | Tokens máximos de respuesta | `1024` |
 
 ### Configuración del Servidor
 

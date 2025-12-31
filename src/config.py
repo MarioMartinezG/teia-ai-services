@@ -41,6 +41,7 @@ class Settings:
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct")  # Best for Spanish
     OLLAMA_FALLBACK_MODEL: str = os.getenv("OLLAMA_FALLBACK_MODEL", "mistral:7b-instruct")
     OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "120"))  # Increased for CPU inference
+    OLLAMA_MAX_TOKENS: int = int(os.getenv("OLLAMA_MAX_TOKENS", "1024"))  # Max tokens for response
 
     # CORS Configuration
     ALLOWED_ORIGINS: List[str] = os.getenv(
