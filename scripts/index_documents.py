@@ -2,7 +2,7 @@
 Document indexing script for TEIA RAG system.
 
 This script:
-1. Loads documents from data/raw/ (PDFs, Excel, Markdown)
+1. Loads documents from the configured data path (PDFs, Excel, Markdown, Text)
 2. Chunks them into smaller pieces
 3. Generates embeddings
 4. Stores in ChromaDB for retrieval
@@ -26,16 +26,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 from openpyxl import load_workbook
 
+from config import settings
 from services.embedding_service import get_embedding_service
 from utils.logger import get_logger
 
 logger = get_logger("indexer")
-
-# Paths
-PROJECT_ROOT = Path(__file__).parent.parent
-DATA_RAW = PROJECT_ROOT / "data" / "raw"
-DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
-CHROMA_DB_PATH = PROJECT_ROOT / "data" / "chroma_db"
 
 # Chunking configuration
 CHUNK_SIZE = 500  # characters
@@ -134,7 +129,7 @@ def load_document(file_path: Path) -> Dict[str, Any]:
             "source": file_path.name,
             "file_type": suffix[1:],  # Remove the dot
             "module": module,
-            "path": str(file_path.relative_to(PROJECT_ROOT)),
+            "path": str(file_path.relative_to(settings.DATA_RAW_PATH)),
         }
     except Exception as e:
         logger.error(f"Error loading {file_path.name}: {e}")
@@ -166,28 +161,32 @@ def chunk_document(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def get_all_documents() -> List[Path]:
-    """Get all document files from data/raw directories."""
+    """
+    Get all document files from the configured raw data path.
+    Scans recursively and filters by supported extensions.
+    """
     documents = []
+    raw_path = settings.DATA_RAW_PATH
+    supported_extensions = set(settings.SUPPORTED_EXTENSIONS)
 
-    # Scan all subdirectories
-    for subdir in ["pdfs", "excel", "articles"]:
-        dir_path = DATA_RAW / subdir
-        if dir_path.exists():
-            for file_path in dir_path.iterdir():
-                if file_path.is_file() and not file_path.name.startswith("."):
-                    documents.append(file_path)
+    if not raw_path.exists():
+        logger.warning(f"Raw data path does not exist: {raw_path}")
+        return documents
 
-    # Also check root of data/raw for markdown files (existing ones)
-    for file_path in DATA_RAW.iterdir():
-        if file_path.is_file() and file_path.suffix in [".md", ".txt"]:
-            documents.append(file_path)
+    # Scan recursively for all supported file types
+    for file_path in raw_path.rglob("*"):
+        if file_path.is_file() and not file_path.name.startswith("."):
+            if file_path.suffix.lower() in supported_extensions:
+                documents.append(file_path)
 
     return documents
 
 
 def save_processed_chunks(chunks: List[Dict[str, Any]]):
     """Save processed chunks to JSON for debugging/review."""
-    output_file = DATA_PROCESSED / "chunks.json"
+    processed_path = settings.DATA_PROCESSED_PATH
+    processed_path.mkdir(parents=True, exist_ok=True)
+    output_file = processed_path / "chunks.json"
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(chunks, f, ensure_ascii=False, indent=2)
     logger.info(f"Saved {len(chunks)} chunks to {output_file}")
@@ -206,7 +205,9 @@ def index_documents():
 
     # Initialize ChromaDB
     logger.info("Initializing ChromaDB...")
-    client = chromadb.PersistentClient(path=str(CHROMA_DB_PATH))
+    chroma_path = settings.CHROMA_DB_PATH
+    chroma_path.mkdir(parents=True, exist_ok=True)
+    client = chromadb.PersistentClient(path=str(chroma_path))
 
     # Delete existing collection if it exists (fresh index)
     try:
@@ -228,9 +229,8 @@ def index_documents():
 
     if not document_paths:
         logger.warning("No documents found! Please add documents to:")
-        logger.warning(f"  - {DATA_RAW / 'pdfs'}")
-        logger.warning(f"  - {DATA_RAW / 'excel'}")
-        logger.warning(f"  - {DATA_RAW / 'articles'}")
+        logger.warning(f"  {settings.DATA_RAW_PATH}")
+        logger.warning(f"Supported extensions: {', '.join(settings.SUPPORTED_EXTENSIONS)}")
         return
 
     all_chunks = []
@@ -281,7 +281,7 @@ def index_documents():
     )
 
     logger.info(f"Successfully indexed {len(all_chunks)} chunks!")
-    logger.info(f"ChromaDB path: {CHROMA_DB_PATH}")
+    logger.info(f"ChromaDB path: {chroma_path}")
 
     # Summary by module
     logger.info("Chunks by module:")

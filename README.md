@@ -45,13 +45,9 @@ teia-ai-services/
 │       └── __init__.py
 ├── scripts/                       # Scripts independientes
 │   └── index_documents.py         # Indexación de documentos para RAG
-├── data/                          # Almacenamiento de datos
-│   ├── raw/                       # Materiales del curso originales
-│   │   ├── pdfs/                  # Documentos PDF
-│   │   ├── excel/                 # Archivos Excel
-│   │   └── articles/              # Artículos e investigaciones
-│   ├── processed/                 # Datos procesados
-│   │   └── chunks.json            # Fragmentos indexados
+├── data/                          # Almacenamiento de datos (configurable via DATA_BASE_PATH)
+│   ├── raw/                       # Documentos para indexar (cualquier estructura)
+│   ├── processed/                 # Datos procesados (chunks.json)
 │   └── chroma_db/                 # Base de datos vectorial
 ├── logs/                          # Logs de la aplicación
 ├── .env                           # Variables de entorno (local)
@@ -123,6 +119,18 @@ python scripts/index_documents.py
 ## Configuración
 
 Las siguientes variables de entorno están disponibles en el archivo `.env`:
+
+### Configuración de Rutas de Datos
+
+| Variable | Descripción | Valor por defecto |
+|----------|-------------|-------------------|
+| `DATA_BASE_PATH` | Ruta base para todos los datos | `./data` (relativo al proyecto) |
+| `SUPPORTED_EXTENSIONS` | Extensiones de archivo soportadas | `.pdf,.xlsx,.xls,.md,.txt` |
+
+La estructura de subdirectorios se crea automáticamente:
+- `{DATA_BASE_PATH}/raw/` - Documentos originales para indexar
+- `{DATA_BASE_PATH}/processed/` - Datos procesados
+- `{DATA_BASE_PATH}/chroma_db/` - Base de datos vectorial
 
 ### Configuración de Ollama
 
@@ -237,18 +245,24 @@ python scripts/index_documents.py
 
 ### Tipos de archivo soportados
 
+Los tipos de archivo soportados son configurables mediante la variable `SUPPORTED_EXTENSIONS`. Por defecto:
+
 - PDF (`.pdf`)
 - Excel (`.xlsx`, `.xls`)
 - Markdown (`.md`)
 - Texto plano (`.txt`)
 
-### Estructura de carpetas para documentos
+### Organización de documentos
+
+Los documentos pueden colocarse directamente en `{DATA_BASE_PATH}/raw/` o en cualquier subcarpeta. El script escanea recursivamente y procesa los archivos según su extensión.
 
 ```
 data/raw/
-├── pdfs/          # Documentos PDF
-├── excel/         # Hojas de cálculo
-└── articles/      # Artículos e investigaciones
+├── documento1.pdf
+├── archivo.xlsx
+├── notas.md
+└── subcarpeta/
+    └── otro_documento.pdf
 ```
 
 El script detecta automáticamente el módulo correspondiente basándose en el nombre del archivo.
