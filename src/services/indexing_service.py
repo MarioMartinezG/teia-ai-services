@@ -17,6 +17,7 @@ from openpyxl import load_workbook
 
 from config import settings
 from services.embedding_service import get_embedding_service
+from services.rag_retriever import reset_rag_retriever
 from utils.logger import get_logger
 
 logger = get_logger("indexing_service")
@@ -329,6 +330,9 @@ class IndexingService:
             task.status = "completed"
             task.message = f"Successfully indexed {len(all_chunks)} chunks from {task.documents_processed} documents"
             task.completed_at = datetime.utcnow().isoformat()
+
+            # Reset RAG retriever to pick up the new collection
+            reset_rag_retriever()
 
             logger.info(f"Indexing complete: {task.message}")
 

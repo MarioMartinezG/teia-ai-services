@@ -199,3 +199,19 @@ def get_rag_retriever() -> RAGRetriever:
     if _retriever is None:
         _retriever = RAGRetriever()
     return _retriever
+
+
+def reset_rag_retriever():
+    """
+    Reset the RAG retriever singleton.
+
+    Call this after re-indexing to force the retriever to
+    reconnect to the new ChromaDB collection.
+    """
+    global _retriever
+    if _retriever is not None:
+        logger.info("Resetting RAG retriever singleton")
+        _retriever._initialized = False
+        _retriever._collection = None
+        _retriever._client = None
+    _retriever = None
