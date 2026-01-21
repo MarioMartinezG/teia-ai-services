@@ -203,6 +203,7 @@ logs/
 # RAG Data (large files, generated indexes)
 data/chroma_db/*
 data/processed/*
+data/raw/*
 data/raw/pdfs/*
 data/raw/excel/*
 data/raw/articles/*
