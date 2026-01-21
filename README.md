@@ -195,6 +195,21 @@ curl http://localhost:8000/status
 |--------|----------|-------------|
 | `POST` | `/ask` | Realizar una pregunta al tutor |
 
+### Gestión de Documentos
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| `GET` | `/documents` | Lista documentos disponibles para indexar |
+| `POST` | `/documents/upload` | Subir documentos (multipart/form-data) |
+
+### Indexación
+
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| `POST` | `/index` | Iniciar proceso de indexación (asíncrono) |
+| `GET` | `/index/status/{task_id}` | Consultar estado de una tarea de indexación |
+| `GET` | `/index/tasks` | Listar todas las tareas de indexación |
+
 #### Ejemplo de solicitud `/ask`
 
 ```json
@@ -290,3 +305,149 @@ El script detecta automáticamente el módulo correspondiente basándose en el n
 - **EmbeddingService**: Genera embeddings de texto usando Sentence-Transformers
 - **RAGRetriever**: Realiza búsqueda semántica en ChromaDB
 - **OllamaService**: Comunica con el modelo LLM para generar respuestas
+- **IndexingService**: Gestiona la indexación asíncrona de documentos
+
+## Despliegue en RunPod (Cloud GPU)
+
+[RunPod](https://runpod.io) es una plataforma de cloud computing que permite ejecutar cargas de trabajo con GPU a precios competitivos.
+
+### Arquitectura de Despliegue
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      RunPod Pod                         │
+│  ┌─────────────────┐      ┌─────────────────────────┐  │
+│  │     Ollama      │◀────▶│   TEIA API (Docker)     │  │
+│  │  (instalado en  │      │   - FastAPI             │  │
+│  │   el pod)       │      │   - RAG/ChromaDB        │  │
+│  │  puerto 11434   │      │   puerto 8000           │  │
+│  └─────────────────┘      └─────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+- **Ollama**: Se instala directamente en el pod (no en Docker)
+- **TEIA API**: Contenedor ligero (~200MB) con FastAPI
+
+### Requisitos de Hardware
+
+Para ejecutar `qwen2.5:7b-instruct`:
+
+| Configuración | VRAM Requerida | GPU Recomendada | Costo Aprox. |
+|---------------|----------------|-----------------|--------------|
+| 4-bit quantization | 6 GB | RTX A5000 | ~$0.16/hr |
+| 8-bit quantization | 10 GB | RTX 3090 | ~$0.22/hr |
+| FP16 (full precision) | 17-20 GB | RTX 4090 | ~$0.44/hr |
+
+**Recomendación económica**: RTX A5000 en Community Cloud.
+
+### Pasos para Desplegar en RunPod
+
+#### 1. Crear cuenta y Pod
+
+1. Registrarse en [runpod.io](https://runpod.io)
+2. Ir a **Pods** > **+ Deploy**
+3. Seleccionar GPU (ej: RTX A5000)
+4. Usar template **PyTorch** (más reciente)
+5. En **Customize Deployment**:
+   - Exponer puerto **11434** (Ollama)
+   - Exponer puerto **8000** (TEIA API)
+   - Agregar variable: `OLLAMA_HOST=0.0.0.0`
+
+#### 2. Instalar Ollama en el Pod
+
+Conectar via terminal web y ejecutar:
+
+```bash
+# Instalar dependencias y Ollama
+apt update && apt install -y lshw zstd
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Iniciar Ollama en background
+nohup ollama serve > /var/log/ollama.log 2>&1 &
+
+# Esperar a que inicie
+sleep 5
+
+# Descargar el modelo
+ollama pull qwen2.5:7b-instruct
+```
+
+#### 3. Construir y Subir imagen Docker
+
+En tu máquina local:
+
+```bash
+# Construir imagen (ligera, ~200MB)
+docker build -t tu-usuario/teia-api:latest .
+
+# Subir a Docker Hub
+docker push tu-usuario/teia-api:latest
+```
+
+#### 4. Ejecutar TEIA API en el Pod
+
+En la terminal del pod:
+
+```bash
+# Ejecutar contenedor TEIA
+docker run -d \
+  --name teia-api \
+  -p 8000:8000 \
+  -e OLLAMA_URL=http://host.docker.internal:11434 \
+  -e OLLAMA_MODEL=qwen2.5:7b-instruct \
+  -v /workspace/data:/app/data \
+  tu-usuario/teia-api:latest
+```
+
+> **Nota**: En RunPod, usa `http://172.17.0.1:11434` o la IP del host para conectar al Ollama del pod.
+
+#### 5. Verificar funcionamiento
+
+```bash
+# Verificar Ollama
+curl http://localhost:11434/api/tags
+
+# Verificar TEIA API
+curl http://localhost:8000/health
+
+# Acceder a la UI
+# Abrir en navegador: https://{POD_ID}-8000.proxy.runpod.net/ui
+```
+
+### Acceso Externo
+
+RunPod proporciona URLs públicas para los puertos expuestos:
+
+| Servicio | URL |
+|----------|-----|
+| TEIA API | `https://{POD_ID}-8000.proxy.runpod.net` |
+| TEIA UI | `https://{POD_ID}-8000.proxy.runpod.net/ui` |
+| Ollama | `https://{POD_ID}-11434.proxy.runpod.net` |
+
+### Desarrollo Local con Docker
+
+Requiere Ollama corriendo en tu máquina:
+
+```bash
+# 1. Iniciar Ollama localmente
+ollama serve
+
+# 2. En otra terminal, descargar modelo
+ollama pull qwen2.5:7b-instruct
+
+# 3. Iniciar TEIA API con Docker
+docker-compose up --build
+
+# 4. Acceder a la UI
+# http://localhost:8000/ui
+```
+
+### Estimación de Costos Mensuales
+
+| Escenario | Uso Diario | GPU | Costo Mensual |
+|-----------|------------|-----|---------------|
+| Bajo | 2 horas | RTX A5000 | ~$10/mes |
+| Moderado | 4 horas | RTX A5000 | ~$19/mes |
+| Alto | 8 horas | RTX A5000 | ~$38/mes |
+
+*Precios aproximados de Community Cloud. Apagar el pod cuando no se use para ahorrar.*

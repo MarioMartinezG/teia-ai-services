@@ -77,3 +77,61 @@ class SystemStatus(BaseModel):
     ollama_connected: bool
     ollama_models: List[str]
     timestamp: str
+
+
+# Document Management Models
+
+class DocumentInfo(BaseModel):
+    """Information about a document available for indexing."""
+    filename: str
+    path: str
+    size_bytes: int
+    extension: str
+    modified_at: str
+
+
+class DocumentListResponse(BaseModel):
+    """Response for listing available documents."""
+    documents: List[DocumentInfo]
+    total_count: int
+    raw_path: str
+
+
+class UploadedFileInfo(BaseModel):
+    """Information about a successfully uploaded file."""
+    filename: str
+    size_bytes: int
+
+
+class FailedFileInfo(BaseModel):
+    """Information about a failed file upload."""
+    filename: str
+    error: str
+
+
+class DocumentUploadResponse(BaseModel):
+    """Response for document upload endpoint."""
+    uploaded_files: List[UploadedFileInfo]
+    failed_files: List[FailedFileInfo]
+    upload_path: str
+
+
+# Indexing Task Models
+
+class IndexingTaskResponse(BaseModel):
+    """Response for indexing task status."""
+    task_id: str
+    status: str  # "pending", "running", "completed", "failed"
+    message: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    documents_processed: int = 0
+    chunks_created: int = 0
+    error: Optional[str] = None
+
+
+class IndexingStartResponse(BaseModel):
+    """Response when starting a new indexing task."""
+    task_id: str
+    status: str
+    message: str
