@@ -84,7 +84,7 @@ class RAGRetriever:
 
         Args:
             query: The user's question
-            module: Optional module filter (e.g., "resultados_aprendizaje")
+            module: Optional module (kept for API compatibility, not used for filtering)
             top_k: Number of chunks to retrieve
 
         Returns:
@@ -95,14 +95,10 @@ class RAGRetriever:
         # Generate query embedding
         query_embedding = self._embedding_service.embed_query(query)
 
-        # Build filter if module specified
-        where_filter = {"module": module} if module else None
-
-        # Query ChromaDB
+        # Query ChromaDB without module filter to search all chunks
         results = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
-            where=where_filter,
             include=["documents", "metadatas", "distances"],
         )
 
@@ -113,9 +109,9 @@ class RAGRetriever:
                 metadata = results["metadatas"][0][i] if results["metadatas"] else {}
                 distance = results["distances"][0][i] if results["distances"] else 0
 
-                # Convert distance to similarity score (ChromaDB uses L2 distance)
-                # Lower distance = more similar, so we invert it
-                similarity = 1 / (1 + distance)
+                # Convert distance to similarity score (ChromaDB uses cosine distance)
+                # Cosine distance = 1 - cosine_similarity, so similarity = 1 - distance
+                similarity = max(0, 1 - distance)
 
                 chunks.append({
                     "content": doc,

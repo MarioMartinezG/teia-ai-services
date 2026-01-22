@@ -173,10 +173,12 @@ async def ask_question(request: QuestionRequest):
             top_k=3
         )
 
-        # Extract sources from retrieved chunks
-        sources = list(set(chunk["source"] for chunk in retrieved_chunks))
+        # Get all indexed documents as sources
+        indexing_service = get_indexing_service()
+        all_documents = indexing_service.list_documents()
+        sources = [doc["filename"] for doc in all_documents]
         if not sources:
-            sources = ["Contexto general del curso"]
+            sources = ["No hay documentos indexados"]
 
         # Calculate confidence based on retrieval scores
         if retrieved_chunks:

@@ -307,6 +307,66 @@ El script detecta automáticamente el módulo correspondiente basándose en el n
 - **OllamaService**: Comunica con el modelo LLM para generar respuestas
 - **IndexingService**: Gestiona la indexación asíncrona de documentos
 
+## Configuracion de Modelos de Embeddings
+
+El servicio de embeddings utiliza modelos de Sentence-Transformers para generar representaciones vectoriales del texto. La eleccion del modelo afecta la calidad de la busqueda semantica y el consumo de recursos.
+
+### Modelo Actual
+
+El modelo por defecto es `paraphrase-multilingual-MiniLM-L12-v2`, configurado en `src/services/embedding_service.py`:
+
+```python
+EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+```
+
+### Modelos Disponibles
+
+| Modelo | Dimensiones | Tamano | RAM/VRAM | Velocidad | Calidad Espanol |
+|--------|-------------|--------|----------|-----------|-----------------|
+| `paraphrase-multilingual-MiniLM-L12-v2` | 384 | 470MB | ~1GB | Rapido | Buena |
+| `paraphrase-multilingual-mpnet-base-v2` | 768 | 1.1GB | ~2GB | Medio | Muy buena |
+| `intfloat/multilingual-e5-base` | 768 | 1.1GB | ~2GB | Medio | Excelente |
+| `intfloat/multilingual-e5-large` | 1024 | 2.2GB | ~4GB | Lento | Excelente |
+
+### Criterios de Seleccion
+
+**Recursos limitados (CPU o GPU basica)**:
+- Usar `paraphrase-multilingual-MiniLM-L12-v2` (actual)
+- Menor consumo de memoria y tiempo de indexacion
+
+**Balance calidad/rendimiento**:
+- Usar `paraphrase-multilingual-mpnet-base-v2`
+- Mejora notable en calidad sin gran impacto en recursos
+
+**Maxima calidad (GPU dedicada)**:
+- Usar `intfloat/multilingual-e5-base` o `multilingual-e5-large`
+- Requiere prefijo `"query: "` para consultas (modificar `embed_query` en `embedding_service.py`)
+
+### Cambiar el Modelo
+
+1. Modificar la constante en `src/services/embedding_service.py`:
+
+```python
+EMBEDDING_MODEL = "paraphrase-multilingual-mpnet-base-v2"  # o el modelo elegido
+```
+
+2. Si se usa un modelo E5, modificar el metodo `embed_query`:
+
+```python
+def embed_query(self, query: str) -> List[float]:
+    # Los modelos E5 requieren prefijo para queries
+    return self.embed_text(f"query: {query}")
+```
+
+3. Reindexar todos los documentos (obligatorio al cambiar de modelo):
+
+```bash
+# POST /index o ejecutar el script
+python scripts/index_documents.py
+```
+
+**Nota**: Los embeddings generados por diferentes modelos no son compatibles entre si. Cambiar de modelo requiere reindexar completamente los documentos.
+
 ## Despliegue en RunPod (Cloud GPU)
 
 [RunPod](https://runpod.io) es una plataforma de cloud computing que permite ejecutar cargas de trabajo con GPU a precios competitivos.

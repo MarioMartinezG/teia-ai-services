@@ -99,7 +99,7 @@ class IndexingService:
 
     @staticmethod
     def _load_excel(file_path: Path) -> str:
-        """Extract text from Excel file."""
+        """Extract text from Excel file with headers preserved per row."""
         workbook = load_workbook(file_path, data_only=True)
         text_parts = []
 
@@ -107,12 +107,27 @@ class IndexingService:
             sheet = workbook[sheet_name]
             text_parts.append(f"=== Hoja: {sheet_name} ===\n")
 
-            for row in sheet.iter_rows(values_only=True):
-                row_text = " | ".join(
-                    str(cell) if cell is not None else "" for cell in row
-                )
-                if row_text.strip():
-                    text_parts.append(row_text)
+            headers = []
+            for row_idx, row in enumerate(sheet.iter_rows(values_only=True)):
+                # First row with content becomes headers
+                if row_idx == 0 or not headers:
+                    headers = [str(cell).strip() if cell else f"Columna_{i}"
+                               for i, cell in enumerate(row)]
+                    # Skip if row is empty
+                    if all(h.startswith("Columna_") or not h for h in headers):
+                        continue
+                    text_parts.append(f"Encabezados: {' | '.join(headers)}")
+                    continue
+
+                # Build row with header:value pairs
+                row_parts = []
+                for i, cell in enumerate(row):
+                    if cell is not None and str(cell).strip():
+                        header = headers[i] if i < len(headers) else f"Columna_{i}"
+                        row_parts.append(f"{header}: {str(cell).strip()}")
+
+                if row_parts:
+                    text_parts.append(" | ".join(row_parts))
 
         return "\n".join(text_parts)
 
@@ -248,7 +263,10 @@ class IndexingService:
 
             collection = client.create_collection(
                 name="teia_course_content",
-                metadata={"description": "TEIA course content for RAG retrieval"},
+                metadata={
+                    "description": "TEIA course content for RAG retrieval",
+                    "hnsw:space": "cosine"  # Use cosine similarity for better semantic matching
+                },
             )
 
             task.message = "Scanning for documents..."
