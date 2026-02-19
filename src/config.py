@@ -30,6 +30,11 @@ class Settings:
         """Path to ChromaDB vector database."""
         return Path(self.DATA_BASE_PATH) / "chroma_db"
 
+    @property
+    def DATA_LOGS_PATH(self) -> Path:
+        """Path for interaction logs."""
+        return Path(self.DATA_BASE_PATH) / "logs"
+
     # Document Indexing Configuration
     SUPPORTED_EXTENSIONS: List[str] = os.getenv(
         "SUPPORTED_EXTENSIONS",

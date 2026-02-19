@@ -12,9 +12,15 @@ from utils.logger import get_logger
 logger = get_logger("embedding_service")
 
 # Model options (all support Spanish):
-# - paraphrase-multilingual-MiniLM-L12-v2: 470MB, 384 dims, fast
-# - distiluse-base-multilingual-cased-v2: 540MB, 512 dims, good quality
-EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+# - paraphrase-multilingual-MiniLM-L12-v2: 470MB, 384 dims, fast but lower retrieval quality
+# - paraphrase-multilingual-mpnet-base-v2: 1GB, 768 dims, good quality
+# - intfloat/multilingual-e5-base: 1.1GB, 768 dims, best retrieval quality for Spanish (current)
+# - intfloat/multilingual-e5-large: 2.2GB, 1024 dims, highest quality, heavier
+#
+# NOTE: intfloat/multilingual-e5-* models require task-specific prefixes:
+#   - "query: "   before user questions (retrieval side)
+#   - "passage: " before document chunks (indexing side)
+EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
 
 
 class EmbeddingService:
@@ -41,34 +47,37 @@ class EmbeddingService:
 
     def embed_text(self, text: str) -> List[float]:
         """
-        Generate embedding for a single text.
+        Generate embedding for a single passage/document chunk.
+        Applies the 'passage: ' prefix required by multilingual-e5 models.
 
         Args:
-            text: Text to embed
+            text: Passage text to embed
 
         Returns:
             List of floats representing the embedding
         """
-        embedding = self._model.encode(text, convert_to_numpy=True)
+        embedding = self._model.encode(f"passage: {text}", convert_to_numpy=True)
         return embedding.tolist()
 
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """
-        Generate embeddings for multiple texts (batch processing).
+        Generate embeddings for multiple passage/document chunks (batch processing).
+        Applies the 'passage: ' prefix required by multilingual-e5 models.
 
         Args:
-            texts: List of texts to embed
+            texts: List of passage texts to embed
 
         Returns:
             List of embeddings
         """
-        embeddings = self._model.encode(texts, convert_to_numpy=True)
+        prefixed = [f"passage: {t}" for t in texts]
+        embeddings = self._model.encode(prefixed, convert_to_numpy=True)
         return embeddings.tolist()
 
     def embed_query(self, query: str) -> List[float]:
         """
         Generate embedding for a search query.
-        Same as embed_text but named differently for clarity.
+        Applies the 'query: ' prefix required by multilingual-e5 models.
 
         Args:
             query: Search query
@@ -76,7 +85,8 @@ class EmbeddingService:
         Returns:
             Query embedding
         """
-        return self.embed_text(query)
+        embedding = self._model.encode(f"query: {query}", convert_to_numpy=True)
+        return embedding.tolist()
 
 
 # Global instance for easy access

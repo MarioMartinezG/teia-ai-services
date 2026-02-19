@@ -4,9 +4,8 @@ Handles semantic search over indexed course content.
 """
 from typing import List, Dict, Any, Optional
 
-import chromadb
-
 from config import settings
+from services.chroma_client import get_chroma_client
 from services.embedding_service import get_embedding_service
 from utils.logger import get_logger
 
@@ -16,7 +15,7 @@ logger = get_logger("rag_retriever")
 COLLECTION_NAME = "teia_course_content"
 
 # Default retrieval settings
-DEFAULT_TOP_K = 3
+DEFAULT_TOP_K = 5
 
 
 class RAGRetriever:
@@ -39,8 +38,8 @@ class RAGRetriever:
             # Initialize embedding service
             self._embedding_service = get_embedding_service()
 
-            # Initialize ChromaDB client
-            self._client = chromadb.PersistentClient(path=str(settings.CHROMA_DB_PATH))
+            # Use the shared ChromaDB client to avoid UUID conflicts on re-indexing
+            self._client = get_chroma_client()
 
             # Get collection
             self._collection = self._client.get_collection(name=COLLECTION_NAME)
@@ -84,7 +83,7 @@ class RAGRetriever:
 
         Args:
             query: The user's question
-            module: Optional module (kept for API compatibility, not used for filtering)
+            module: Optional module - used to filter chunks to the relevant module and general content
             top_k: Number of chunks to retrieve
 
         Returns:
@@ -95,12 +94,29 @@ class RAGRetriever:
         # Generate query embedding
         query_embedding = self._embedding_service.embed_query(query)
 
-        # Query ChromaDB without module filter to search all chunks
+        # Filter by module when provided: include module-specific chunks AND general chunks.
+        # This avoids returning irrelevant context from unrelated modules.
+        where_filter = None
+        if module and module != "general":
+            where_filter = {"module": {"$in": [module, "general"]}}
+
         results = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
             include=["documents", "metadatas", "distances"],
+            where=where_filter,
         )
+
+        # If module filter returned no results, retry without filter
+        if where_filter and (not results["documents"] or not results["documents"][0]):
+            logger.info(
+                f"No chunks found for module '{module}', retrying without module filter"
+            )
+            results = self._collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                include=["documents", "metadatas", "distances"],
+            )
 
         # Format results
         chunks = []
@@ -166,7 +182,7 @@ FUENTES: {source_list}"""
     def _get_fallback_context(self, module: Optional[str] = None) -> str:
         """Return fallback context when no relevant chunks found."""
         base_context = """
-Universidad El Bosque - Curso: "En sus marcas, listos, iRAC!"
+Universidad El Bosque - Curso: "En sus marcas, listos, ¡RAC!"
 Enfoque: Diseño curricular centrado en el estudiante
 Objetivo: Fortalecer competencias pedagógicas en diseño de microcurrículos
 """
