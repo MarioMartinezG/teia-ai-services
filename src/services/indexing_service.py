@@ -10,12 +10,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import chromadb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 from openpyxl import load_workbook
 
 from config import settings
+from services.chroma_client import get_chroma_client
 from services.embedding_service import get_embedding_service
 from services.rag_retriever import reset_rag_retriever
 from utils.logger import get_logger
@@ -23,8 +23,8 @@ from utils.logger import get_logger
 logger = get_logger("indexing_service")
 
 # Chunking configuration
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 50
+CHUNK_SIZE = 800
+CHUNK_OVERLAP = 150
 
 # Module mapping based on filename patterns
 MODULE_PATTERNS = {
@@ -249,12 +249,12 @@ class IndexingService:
 
             task.message = "Initializing ChromaDB..."
 
-            # Initialize ChromaDB
-            chroma_path = settings.CHROMA_DB_PATH
-            chroma_path.mkdir(parents=True, exist_ok=True)
-            client = chromadb.PersistentClient(path=str(chroma_path))
+            # Use the shared ChromaDB client — creating a second PersistentClient on the
+            # same SQLite database causes UUID conflicts when a collection is deleted and
+            # recreated while the RAG retriever still holds a reference to the old one.
+            client = get_chroma_client()
 
-            # Delete existing collection if it exists
+            # Delete existing collection if it exists, then recreate it clean
             try:
                 client.delete_collection("teia_course_content")
                 logger.info("Deleted existing collection")
@@ -265,7 +265,7 @@ class IndexingService:
                 name="teia_course_content",
                 metadata={
                     "description": "TEIA course content for RAG retrieval",
-                    "hnsw:space": "cosine"  # Use cosine similarity for better semantic matching
+                    "hnsw:space": "cosine"
                 },
             )
 
@@ -361,17 +361,28 @@ class IndexingService:
             task.message = f"Indexing failed: {str(e)}"
             task.completed_at = datetime.utcnow().isoformat()
 
-    def start_indexing(self) -> str:
-        """Start a new indexing task and return its ID."""
+    def start_indexing(self) -> tuple:
+        """
+        Start a new indexing task and return (task_id, created).
+
+        If a task is already pending or running, returns its ID without
+        launching a new one. 'created' is False in that case.
+        """
+        for task in self._tasks.values():
+            if task.status in ("pending", "running"):
+                logger.info(
+                    f"Indexing already in progress, reusing task: {task.task_id}"
+                )
+                return task.task_id, False
+
         task_id = str(uuid.uuid4())
         task = IndexingTask(task_id)
         self._tasks[task_id] = task
 
-        # Schedule the indexing task
         asyncio.create_task(self._run_indexing(task))
 
         logger.info(f"Started indexing task: {task_id}")
-        return task_id
+        return task_id, True
 
     def get_status(self, task_id: str) -> Optional[Dict[str, Any]]:
         """Get the status of an indexing task."""

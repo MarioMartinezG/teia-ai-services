@@ -4,7 +4,7 @@ Handles all communication with the Ollama LLM service.
 """
 import asyncio
 import aiohttp
-from typing import List
+from typing import List, Optional
 from config import settings
 from utils.logger import get_logger
 
@@ -34,35 +34,47 @@ async def check_ollama_health() -> tuple[bool, List[str]]:
         return False, []
 
 
-async def generate_response(question: str, context: str = "", module: str = "") -> str:
+async def generate_response(
+    question: str,
+    context: str = "",
+    module: str = "",
+    history: Optional[List[dict]] = None,
+) -> str:
     """
     Generate a response from Ollama with curriculum design specialization.
 
     Args:
         question: The user's question
-        context: Additional context for the module
-        module: The current module name
+        context: RAG-retrieved course context
+        module: The current module display name
+        history: List of previous turns [{"q": ..., "a": ...}]
 
     Returns:
         The generated response text
     """
-    prompt = f"""Eres TEIA, un tutor especializado en diseño curricular de la Universidad El Bosque.
-Apoyas el curso "En sus marcas, listos, iRAC!" para docentes.
+    # Build conversation history block if there are previous turns
+    history_block = ""
+    if history:
+        turns = [f"Docente: {t['q']}\nTEIA: {t['a']}" for t in history]
+        history_block = "CONVERSACIÓN PREVIA:\n" + "\n\n".join(turns) + "\n\n"
 
-CONTEXTO DEL CURSO:
+    prompt = f"""Eres TEIA, un tutor especializado en diseño curricular de la Universidad El Bosque.
+Apoyas a docentes en el curso "En sus marcas, listos, ¡RAC!" para diseñar microcurrículos de calidad.
+
+CONTEXTO RECUPERADO DEL CURSO:
 {context}
 
-MÓDULO ACTUAL: {module}
+{history_block}MÓDULO ACTUAL: {module}
 PREGUNTA DEL DOCENTE: {question}
 
-REGLAS ESTRICTAS:
-1. Si el docente pide algo "resumido", "breve" o "corto", responde en MÁXIMO 3-4 oraciones
-2. NUNCA escribas ejemplos concretos de resultados de aprendizaje, actividades o evaluaciones
-3. NUNCA uses frases como "Ejemplo de resultado de aprendizaje:" seguido de un ejemplo real
-4. Tu rol es explicar CÓMO construir, no construir por el docente
-5. Describe CARACTERÍSTICAS y CRITERIOS, no ejemplos terminados
-6. Responde en español, de forma clara y directa
-7. Adapta la extensión de tu respuesta a lo que pide el docente
+INSTRUCCIONES:
+1. Responde SIEMPRE en español formal pero cercano, propio del contexto universitario colombiano.
+2. Estructura tu respuesta así: explica el concepto o criterio y, si es útil, ofrece UN ejemplo ilustrativo breve. No termines con preguntas al docente.
+3. Si el docente pide algo "resumido", "breve" o "corto", limítate a 3-4 oraciones.
+4. Si el contexto recuperado no es suficiente para responder con precisión, indícalo con honestidad y orienta al docente sobre dónde buscar más información.
+5. Responde en el contexto del módulo "{module}" sin necesidad de mencionarlo explícitamente en cada respuesta.
+6. Adapta la extensión al tipo de pregunta: preguntas conceptuales merecen más detalle; preguntas procedimentales, pasos concretos.
+7. No repitas el enunciado de la pregunta en tu respuesta.
 
 RESPUESTA:"""
 
@@ -79,7 +91,7 @@ RESPUESTA:"""
                         "top_k": 40,
                         "top_p": 0.9,
                         "num_predict": settings.OLLAMA_MAX_TOKENS,
-                        "num_ctx": 4096
+                        "num_ctx": 8192
                     }
                 },
                 timeout=aiohttp.ClientTimeout(total=settings.OLLAMA_TIMEOUT)

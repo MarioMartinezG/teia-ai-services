@@ -2,10 +2,12 @@
 TEIA Tutor AI Service - Main Application
 FastAPI application for the Intelligent Tutoring System.
 """
+import json
+import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
@@ -37,7 +39,7 @@ logger = get_logger("main")
 # Initialize FastAPI app
 app = FastAPI(
     title="TEIA Tutor AI Service",
-    description="Servicio de Tutoría Inteligente para el curso 'En sus marcas, listos, iRAC!'",
+    description="Servicio de Tutoría Inteligente para el curso 'En sus marcas, listos, ¡RAC!'",
     version="1.0.0"
 )
 
@@ -51,6 +53,17 @@ if static_path.exists():
 
 
 # Course modules definition
+# Maps module IDs (sent by the client) to their human-readable display names
+# used inside the LLM prompt so the model sees the proper name, not the raw ID.
+MODULE_DISPLAY_NAMES = {
+    "caracterizacion":         "Caracterización de la Asignatura",
+    "factores_situacionales":  "Factores Situacionales",
+    "resultados_aprendizaje":  "Resultados de Aprendizaje",
+    "actividades_aprendizaje": "Actividades de Aprendizaje",
+    "evaluacion":              "Evaluación",
+    "secuencia":               "Secuencia del Curso",
+}
+
 COURSE_MODULES = [
     ModuleInfo(
         id="caracterizacion",
@@ -137,6 +150,112 @@ async def get_modules():
     return COURSE_MODULES
 
 
+# Suggested actions per module — shown to the teacher after each response
+SUGGESTED_ACTIONS = {
+    "caracterizacion": [
+        "Revisa los lineamientos institucionales de la Universidad El Bosque para caracterización",
+        "Identifica el nivel de formación y las condiciones del grupo al que va dirigida la asignatura",
+        "Contrasta la caracterización con las competencias declaradas en el programa de estudios",
+    ],
+    "factores_situacionales": [
+        "Documenta los factores del entorno que condicionan el diseño de tu asignatura",
+        "Considera el perfil sociocultural del estudiantado al definir las estrategias",
+        "Revisa cómo los factores situacionales impactan la selección de actividades y evaluaciones",
+    ],
+    "resultados_aprendizaje": [
+        "Selecciona un verbo observable de la taxonomía de Fink para redactar tu resultado",
+        "Verifica que cada resultado sea medible con los instrumentos de evaluación disponibles",
+        "Consulta el material 'Guía diseño Fink.pdf' incluido en el curso como referencia",
+    ],
+    "actividades_aprendizaje": [
+        "Asegúrate de que cada actividad esté alineada con al menos un resultado de aprendizaje",
+        "Incorpora principios de aprendizaje activo: reflexión, colaboración o aplicación real",
+        "Estima el tiempo y recursos necesarios antes de incluir la actividad en la secuencia",
+    ],
+    "evaluacion": [
+        "Distingue qué momentos serán formativos (retroalimentación) y cuáles sumativos (calificación)",
+        "Diseña la rúbrica antes de definir la actividad evaluativa, no al revés",
+        "Revisa el documento de la UNESCO sobre evaluación para los aprendizajes incluido en el curso",
+    ],
+    "secuencia": [
+        "Distribuye los momentos de evaluación a lo largo del curso, no solo al final",
+        "Verifica que la progresión de actividades respete la complejidad creciente de los contenidos",
+        "Revisa que los tiempos de cada semana sean realistas para el docente y el estudiante",
+    ],
+}
+
+DEFAULT_SUGGESTED_ACTIONS = [
+    "Revisa los materiales del módulo actual disponibles en el curso ¡RAC!",
+    "Consulta con un tutor humano si tienes dudas conceptuales sobre el diseño",
+    "Valida tu propuesta con los lineamientos curriculares de la Universidad El Bosque",
+]
+
+
+# ---------------------------------------------------------------------------
+# Conversation history store
+# ---------------------------------------------------------------------------
+# Keyed by session_id. Each entry: {"turns": [...], "last_active": datetime}
+# Turns are pruned to MAX_HISTORY_TURNS and sessions expire after TTL.
+
+CONVERSATION_TTL_MINUTES = 30
+MAX_HISTORY_TURNS = 5
+
+_conversation_store: Dict[str, dict] = {}
+
+
+def _prune_expired_sessions():
+    cutoff = datetime.utcnow() - timedelta(minutes=CONVERSATION_TTL_MINUTES)
+    expired = [sid for sid, data in _conversation_store.items()
+               if data["last_active"] < cutoff]
+    for sid in expired:
+        del _conversation_store[sid]
+
+
+def _get_history(session_id: str) -> List[dict]:
+    if not session_id:
+        return []
+    _prune_expired_sessions()
+    entry = _conversation_store.get(session_id)
+    return entry["turns"] if entry else []
+
+
+def _add_to_history(session_id: str, question: str, answer: str):
+    if not session_id:
+        return
+    if session_id not in _conversation_store:
+        _conversation_store[session_id] = {"turns": [], "last_active": datetime.utcnow()}
+    entry = _conversation_store[session_id]
+    entry["turns"].append({"q": question, "a": answer})
+    if len(entry["turns"]) > MAX_HISTORY_TURNS:
+        entry["turns"] = entry["turns"][-MAX_HISTORY_TURNS:]
+    entry["last_active"] = datetime.utcnow()
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove common markdown formatting from LLM-generated text."""
+    # Bold: **text** or __text__
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'__(.*?)__', r'\1', text)
+    # Italic: *text* or _text_
+    text = re.sub(r'\*(.*?)\*', r'\1', text)
+    text = re.sub(r'_(.*?)_', r'\1', text)
+    # Inline code: `text`
+    text = re.sub(r'`(.*?)`', r'\1', text)
+    return text
+
+
+def _log_interaction(entry: dict):
+    """Append a query/response record to the JSONL interaction log."""
+    try:
+        log_path = settings.DATA_LOGS_PATH
+        log_path.mkdir(parents=True, exist_ok=True)
+        log_file = log_path / "queries.jsonl"
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.warning(f"Could not write interaction log: {exc}")
+
+
 @app.post("/ask", response_model=QuestionResponse)
 async def ask_question(request: QuestionRequest):
     """
@@ -159,58 +278,79 @@ async def ask_question(request: QuestionRequest):
         # Get RAG retriever
         retriever = get_rag_retriever()
 
-        # Retrieve relevant context using RAG
+        # Retrieve relevant context using RAG (single embedding computation)
         retrieved_chunks = retriever.retrieve(
             query=request.question,
             module=request.module,
-            top_k=3
+            top_k=5
         )
 
-        # Get formatted context for LLM
-        context = retriever.get_context_for_query(
-            query=request.question,
-            module=request.module,
-            top_k=3
-        )
+        # Build context string directly from retrieved_chunks to avoid a second embedding call
+        if retrieved_chunks:
+            parts = [f"[Fragmento {i + 1}]\n{c['content']}" for i, c in enumerate(retrieved_chunks)]
+            sources_label = ", ".join({c["source"] for c in retrieved_chunks})
+            context = (
+                "CONTEXTO RECUPERADO DEL CURSO:\n"
+                + "\n\n".join(parts)
+                + f"\n\nFUENTES: {sources_label}"
+            )
+        else:
+            context = retriever._get_fallback_context(request.module)
 
-        # Get all indexed documents as sources
-        indexing_service = get_indexing_service()
-        all_documents = indexing_service.list_documents()
-        sources = [doc["filename"] for doc in all_documents]
-        if not sources:
-            sources = ["No hay documentos indexados"]
+        # Sources: only documents that actually contributed to this response
+        sources = list({c["source"] for c in retrieved_chunks}) if retrieved_chunks else ["No hay documentos indexados"]
 
         # Calculate confidence based on retrieval scores
         if retrieved_chunks:
             avg_score = sum(c["score"] for c in retrieved_chunks) / len(retrieved_chunks)
-            confidence = min(avg_score + 0.3, 0.95)  # Boost and cap at 0.95
+            confidence = min(avg_score + 0.3, 0.95)
         else:
-            confidence = 0.5  # Lower confidence without retrieved context
+            confidence = 0.5
+
+        # Resolve module ID to its display name for the LLM prompt
+        module_display = MODULE_DISPLAY_NAMES.get(request.module, "General")
+
+        # Retrieve conversation history for this session
+        history = _get_history(request.session_id)
 
         # Generate response from LLM (async)
         answer = await generate_response(
             question=request.question,
             context=context,
-            module=request.module or "General"
+            module=module_display,
+            history=history
         )
+
+        answer = _strip_markdown(answer)
+
+        # Persist this turn so subsequent questions have context
+        _add_to_history(request.session_id, request.question, answer)
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        _log_interaction({
+            "timestamp": datetime.utcnow().isoformat(),
+            "user_id": request.user_id,
+            "session_id": request.session_id,
+            "module": request.module,
+            "question": request.question,
+            "answer": answer,
+            "confidence": round(confidence, 2),
+            "sources": sources,
+            "chunk_scores": [c["score"] for c in retrieved_chunks],
+            "processing_time_ms": processing_time_ms,
+        })
+
+        suggested_actions = SUGGESTED_ACTIONS.get(request.module, DEFAULT_SUGGESTED_ACTIONS)
+
         return QuestionResponse(
-            # Echo back user context for correlation
             user_id=request.user_id,
             session_id=request.session_id,
             module=request.module,
-            # Response content
             answer=answer,
             confidence=round(confidence, 2),
             sources=sources,
-            suggested_actions=[
-                "Revisar los documentos fuente mencionados",
-                "Consultar con tutor humano para casos complejos",
-                "Validar con lineamientos institucionales"
-            ],
-            # Metadata
+            suggested_actions=suggested_actions,
             model_used=settings.OLLAMA_MODEL,
             processing_time_ms=processing_time_ms
         )
@@ -339,12 +479,21 @@ async def start_indexing():
     """
     try:
         indexing_service = get_indexing_service()
-        task_id = indexing_service.start_indexing()
+        task_id, created = indexing_service.start_indexing()
+        task_status = indexing_service.get_status(task_id)
+
+        if created:
+            message = "Indexing task started. Use /index/status/{task_id} to check progress."
+        else:
+            message = (
+                f"An indexing task is already in progress (status: {task_status['status']}). "
+                "Use /index/status/{task_id} to monitor it."
+            )
 
         return IndexingStartResponse(
             task_id=task_id,
-            status="pending",
-            message="Indexing task started. Use /index/status/{task_id} to check progress."
+            status=task_status["status"],
+            message=message
         )
     except Exception as e:
         logger.error(f"Error starting indexing: {e}")
