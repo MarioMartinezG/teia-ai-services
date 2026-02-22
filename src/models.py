@@ -72,10 +72,13 @@ class HealthResponse(BaseModel):
 
 class SystemStatus(BaseModel):
     """Detailed system status response."""
+    model_config = {"protected_namespaces": ()}
+
     service: str
     status: str
     ollama_connected: bool
     ollama_models: List[str]
+    model_used: str
     timestamp: str
 
 

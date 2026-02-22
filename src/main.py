@@ -140,6 +140,7 @@ async def get_status():
         status="running",
         ollama_connected=ollama_connected,
         ollama_models=models,
+        model_used=settings.OLLAMA_MODEL,
         timestamp=datetime.now().isoformat()
     )
 
