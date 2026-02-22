@@ -322,6 +322,7 @@
             font-size: 0.85rem;
             color: #888;
         }
+
     </style>
 </head>
 <body>
@@ -440,6 +441,7 @@
     <script>
         const API_URL = window.location.origin;
         let selectedModule = null;
+        const SESSION_ID = 'ui-session-001';
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -447,45 +449,34 @@
             loadModules();
             loadDocuments();
             loadTasks();
-
-            // Auto-refresh health every 30s
             setInterval(checkHealth, 30000);
         });
 
         function showPanel(panelId) {
             document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-
             document.getElementById(panelId).classList.add('active');
             event.target.classList.add('active');
         }
 
         async function checkHealth() {
             try {
-                const response = await fetch(`${API_URL}/health`);
-                const data = await response.json();
+                const data = await fetch(`${API_URL}/health`).then(r => r.json());
 
-                const apiIndicator = document.getElementById('apiStatus');
-                const apiText = document.getElementById('apiStatusText');
-                const ollamaIndicator = document.getElementById('ollamaStatus');
-                const ollamaText = document.getElementById('ollamaStatusText');
-
-                apiIndicator.className = 'status-indicator healthy';
-                apiText.textContent = 'Conectado';
+                document.getElementById('apiStatus').className = 'status-indicator healthy';
+                document.getElementById('apiStatusText').textContent = 'Conectado';
 
                 if (data.ollama_connected) {
-                    ollamaIndicator.className = 'status-indicator healthy';
-                    ollamaText.textContent = 'Conectado';
+                    document.getElementById('ollamaStatus').className = 'status-indicator healthy';
+                    document.getElementById('ollamaStatusText').textContent = 'Conectado';
                 } else {
-                    ollamaIndicator.className = 'status-indicator error';
-                    ollamaText.textContent = 'Desconectado';
+                    document.getElementById('ollamaStatus').className = 'status-indicator error';
+                    document.getElementById('ollamaStatusText').textContent = 'Desconectado';
                 }
 
-                // Get model name
-                const statusRes = await fetch(`${API_URL}/status`);
-                const statusData = await statusRes.json();
-                if (statusData.ollama_models && statusData.ollama_models.length > 0) {
-                    document.getElementById('modelName').textContent = statusData.ollama_models[0];
+                const statusData = await fetch(`${API_URL}/status`).then(r => r.json());
+                if (statusData.model_used) {
+                    document.getElementById('modelName').textContent = statusData.model_used;
                 }
             } catch (error) {
                 document.getElementById('apiStatus').className = 'status-indicator error';
@@ -497,11 +488,8 @@
 
         async function loadModules() {
             try {
-                const response = await fetch(`${API_URL}/modules`);
-                const modules = await response.json();
-
-                const grid = document.getElementById('modulesGrid');
-                grid.innerHTML = modules.map(m => `
+                const modules = await fetch(`${API_URL}/modules`).then(r => r.json());
+                document.getElementById('modulesGrid').innerHTML = modules.map(m => `
                     <div class="module-card" onclick="selectModule('${m.id}', this)">
                         <h4>${m.name}</h4>
                         <p>${m.description}</p>
@@ -514,7 +502,6 @@
 
         function selectModule(moduleId, element) {
             document.querySelectorAll('.module-card').forEach(c => c.classList.remove('selected'));
-
             if (selectedModule === moduleId) {
                 selectedModule = null;
             } else {
@@ -542,7 +529,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         question: question,
-                        module: selectedModule
+                        module: selectedModule,
+                        session_id: SESSION_ID
                     })
                 });
 
@@ -562,11 +550,10 @@
             }
         }
 
+        // ── Documents ──────────────────────────────────────────────────────
         async function loadDocuments() {
             try {
-                const response = await fetch(`${API_URL}/documents`);
-                const data = await response.json();
-
+                const data = await fetch(`${API_URL}/documents`).then(r => r.json());
                 const list = document.getElementById('documentList');
 
                 if (data.documents.length === 0) {
@@ -580,12 +567,10 @@
                             <div class="name">${doc.filename}</div>
                             <div class="meta">${doc.path}</div>
                         </div>
-                        <div class="meta">
-                            ${formatBytes(doc.size_bytes)} | ${doc.extension}
-                        </div>
+                        <div class="meta">${formatBytes(doc.size_bytes)} | ${doc.extension}</div>
                     </div>
                 `).join('');
-            } catch (error) {
+            } catch {
                 document.getElementById('documentList').innerHTML =
                     '<p style="color: #ff4444;">Error al cargar documentos</p>';
             }
@@ -593,14 +578,10 @@
 
         async function uploadFiles() {
             const input = document.getElementById('fileInput');
-            const files = input.files;
-
-            if (files.length === 0) return;
+            if (input.files.length === 0) return;
 
             const formData = new FormData();
-            for (let file of files) {
-                formData.append('files', file);
-            }
+            for (let file of input.files) formData.append('files', file);
 
             const resultDiv = document.getElementById('uploadResult');
             resultDiv.classList.remove('hidden');
@@ -608,25 +589,18 @@
             resultDiv.textContent = 'Subiendo archivos...';
 
             try {
-                const response = await fetch(`${API_URL}/documents/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-
-                const data = await response.json();
+                const data = await fetch(`${API_URL}/documents/upload`, {
+                    method: 'POST', body: formData
+                }).then(r => r.json());
 
                 let message = '';
-                if (data.uploaded_files.length > 0) {
+                if (data.uploaded_files.length)
                     message += `Subidos correctamente:\n${data.uploaded_files.map(f => `  - ${f.filename} (${formatBytes(f.size_bytes)})`).join('\n')}\n\n`;
-                }
-                if (data.failed_files.length > 0) {
+                if (data.failed_files.length)
                     message += `Fallidos:\n${data.failed_files.map(f => `  - ${f.filename}: ${f.error}`).join('\n')}`;
-                }
 
                 resultDiv.textContent = message;
-                resultDiv.classList.add(data.failed_files.length > 0 ? 'error' : 'success');
-
-                // Reload document list
+                resultDiv.classList.add(data.failed_files.length ? 'error' : 'success');
                 loadDocuments();
             } catch (error) {
                 resultDiv.textContent = 'Error: ' + error.message;
@@ -636,24 +610,18 @@
             input.value = '';
         }
 
+        // ── Indexing ───────────────────────────────────────────────────────
         async function startIndexing() {
             const btn = document.getElementById('indexBtn');
             btn.disabled = true;
             btn.innerHTML = '<span class="loader"></span>Iniciando...';
 
             try {
-                const response = await fetch(`${API_URL}/index`, {
-                    method: 'POST'
-                });
-
-                const data = await response.json();
-
+                const data = await fetch(`${API_URL}/index`, { method: 'POST' }).then(r => r.json());
                 const statusDiv = document.getElementById('indexingStatus');
                 statusDiv.classList.remove('hidden');
                 statusDiv.textContent = `Tarea iniciada!\nID: ${data.task_id}\nEstado: ${data.status}\n\n${data.message}`;
                 statusDiv.classList.add('success');
-
-                // Start polling for status
                 pollTaskStatus(data.task_id);
             } catch (error) {
                 alert('Error al iniciar indexación: ' + error.message);
@@ -665,12 +633,9 @@
 
         async function pollTaskStatus(taskId) {
             const statusDiv = document.getElementById('indexingStatus');
-
             const poll = async () => {
                 try {
-                    const response = await fetch(`${API_URL}/index/status/${taskId}`);
-                    const data = await response.json();
-
+                    const data = await fetch(`${API_URL}/index/status/${taskId}`).then(r => r.json());
                     statusDiv.textContent = `Tarea: ${data.task_id}\nEstado: ${data.status}\nMensaje: ${data.message}\n\nDocumentos procesados: ${data.documents_processed}\nChunks creados: ${data.chunks_created}`;
 
                     if (data.status === 'running' || data.status === 'pending') {
@@ -684,15 +649,12 @@
                     statusDiv.textContent = 'Error al obtener estado: ' + error.message;
                 }
             };
-
             poll();
         }
 
         async function loadTasks() {
             try {
-                const response = await fetch(`${API_URL}/index/tasks`);
-                const tasks = await response.json();
-
+                const tasks = await fetch(`${API_URL}/index/tasks`).then(r => r.json());
                 const list = document.getElementById('tasksList');
 
                 if (tasks.length === 0) {
@@ -706,37 +668,33 @@
                             <div class="name">${task.status.toUpperCase()}</div>
                             <div class="meta">${task.task_id}</div>
                         </div>
-                        <div class="meta">
-                            ${task.documents_processed} docs | ${task.chunks_created} chunks
-                        </div>
+                        <div class="meta">${task.documents_processed} docs | ${task.chunks_created} chunks</div>
                     </div>
                 `).join('');
-            } catch (error) {
+            } catch {
                 document.getElementById('tasksList').innerHTML =
                     '<p style="color: #ff4444;">Error al cargar tareas</p>';
             }
         }
 
+        // ── System status ──────────────────────────────────────────────────
         async function loadFullStatus() {
             try {
                 const [health, status] = await Promise.all([
                     fetch(`${API_URL}/health`).then(r => r.json()),
                     fetch(`${API_URL}/status`).then(r => r.json())
                 ]);
-
-                document.getElementById('fullStatus').textContent = JSON.stringify({
-                    health,
-                    status
-                }, null, 2);
+                document.getElementById('fullStatus').textContent =
+                    JSON.stringify({ health, status }, null, 2);
             } catch (error) {
                 document.getElementById('fullStatus').textContent = 'Error: ' + error.message;
             }
         }
 
+        // ── Utils ──────────────────────────────────────────────────────────
         function formatBytes(bytes) {
             if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
             return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
         }
