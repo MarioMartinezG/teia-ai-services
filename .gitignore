@@ -197,6 +197,9 @@ cython_debug/
 # Logs
 logs/
 
+# Docs
+docs/
+
 # Claude Code settings
 .claude/
 
