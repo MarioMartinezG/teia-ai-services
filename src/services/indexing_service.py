@@ -26,7 +26,9 @@ logger = get_logger("indexing_service")
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 150
 
-# Module mapping based on filename patterns
+# Module mapping based on filename/content patterns.
+# Used only for metadata tagging — retrieval no longer filters by module.
+# Module metadata is preserved for analytics, logging, and future use.
 MODULE_PATTERNS = {
     "caracterizacion": ["caracterizacion", "caracterización", "asignatura"],
     "factores_situacionales": ["factores", "situacional", "contexto"],
@@ -76,7 +78,7 @@ class IndexingService:
 
     @staticmethod
     def _detect_module(filename: str, content: str = "") -> str:
-        """Detect module based on filename or content patterns."""
+        """Detect module based on filename or content patterns (metadata only)."""
         filename_lower = filename.lower()
         content_lower = content.lower()[:500]
 

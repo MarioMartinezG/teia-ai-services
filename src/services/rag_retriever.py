@@ -1,7 +1,19 @@
 """
 RAG Retriever service for TEIA Tutor.
-Handles semantic search over indexed course content.
+
+Uses hybrid search: BM25 (keyword) + dense vector similarity, fused via
+Reciprocal Rank Fusion (RRF).
+
+Design:
+- Both searches run on the FULL corpus (no module filter). At ~857 chunks the
+  corpus is small enough that filtering by module only hurts recall without
+  meaningful precision gains, especially given unreliable module classification.
+- Dense vector search handles semantic similarity.
+- BM25 handles keyword-specific lookups where the query phrasing differs from
+  the chunk text (semantic gap — the main failure mode of pure vector search).
+- Results are fused with RRF(k=60), which is standard in hybrid retrieval.
 """
+import re
 from typing import List, Dict, Any, Optional
 
 from config import settings
@@ -11,11 +23,9 @@ from utils.logger import get_logger
 
 logger = get_logger("rag_retriever")
 
-# Collection name for ChromaDB
 COLLECTION_NAME = "teia_course_content"
-
-# Default retrieval settings
 DEFAULT_TOP_K = 5
+RRF_K = 60  # Standard constant for Reciprocal Rank Fusion
 
 
 class RAGRetriever:
@@ -27,26 +37,31 @@ class RAGRetriever:
         self._embedding_service = None
         self._initialized = False
 
+        # BM25 index (built lazily at first retrieve call)
+        self._bm25_index = None
+        self._bm25_docs: List[str] = []    # All chunk texts, indexed by position
+        self._bm25_metas: List[dict] = []  # Corresponding metadata dicts
+
+    # ------------------------------------------------------------------
+    # Initialisation
+    # ------------------------------------------------------------------
+
     def _ensure_initialized(self):
-        """Lazy initialization of ChromaDB and embedding service."""
+        """Lazy initialization of ChromaDB, embedding service, and BM25 index."""
         if self._initialized:
             return
 
         try:
             logger.info("Initializing RAG retriever...")
 
-            # Initialize embedding service
             self._embedding_service = get_embedding_service()
-
-            # Use the shared ChromaDB client to avoid UUID conflicts on re-indexing
             self._client = get_chroma_client()
-
-            # Get collection
             self._collection = self._client.get_collection(name=COLLECTION_NAME)
 
             chunk_count = self._collection.count()
             logger.info(f"RAG retriever initialized. Collection has {chunk_count} chunks.")
 
+            self._build_bm25_index()
             self._initialized = True
 
         except Exception as e:
@@ -54,9 +69,41 @@ class RAGRetriever:
             self._initialized = False
             raise
 
+    def _build_bm25_index(self):
+        """Build in-memory BM25 index from all chunks stored in ChromaDB."""
+        try:
+            from rank_bm25 import BM25Okapi
+
+            # Fetch every document from ChromaDB (no filter — we want the full corpus)
+            all_data = self._collection.get(include=["documents", "metadatas"])
+            self._bm25_docs = all_data["documents"]
+            self._bm25_metas = all_data["metadatas"]
+
+            tokenized_corpus = [self._tokenize(doc) for doc in self._bm25_docs]
+            self._bm25_index = BM25Okapi(tokenized_corpus)
+
+            logger.info(f"BM25 index built from {len(self._bm25_docs)} chunks.")
+
+        except ImportError:
+            logger.warning(
+                "rank_bm25 not installed — falling back to pure vector search. "
+                "Run: pip install rank_bm25"
+            )
+        except Exception as e:
+            logger.warning(f"Could not build BM25 index: {e}")
+
+    @staticmethod
+    def _tokenize(text: str) -> list:
+        """Lowercase + remove punctuation + split. Used for BM25."""
+        return re.sub(r"[^\w\s]", " ", text.lower()).split()
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
     @property
     def is_available(self) -> bool:
-        """Check if the retriever is available (index exists)."""
+        """Check if the retriever is available (index exists and non-empty)."""
         try:
             self._ensure_initialized()
             return self._collection.count() > 0
@@ -65,7 +112,7 @@ class RAGRetriever:
 
     @property
     def chunk_count(self) -> int:
-        """Get number of indexed chunks."""
+        """Number of indexed chunks."""
         try:
             self._ensure_initialized()
             return self._collection.count()
@@ -79,67 +126,135 @@ class RAGRetriever:
         top_k: int = DEFAULT_TOP_K,
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve relevant chunks for a query.
+        Retrieve relevant chunks using hybrid search (BM25 + dense vector).
+
+        Strategy
+        --------
+        1. Dense vector search: full corpus, no module filter.
+           Uses a larger candidate pool (top_k * 4) to feed the RRF merger.
+        2. BM25 keyword search: full corpus — guarantees keyword-specific chunks
+           rank high even when semantic similarity alone would miss them.
+        3. RRF(k=60) merges both ranked lists into a single final ranking.
+
+        The `module` parameter is accepted for API compatibility but is not used
+        for filtering. At ~857 chunks, searching the full corpus is fast and
+        produces better results than per-module filtering with unreliable classification.
 
         Args:
-            query: The user's question
-            module: Optional module - used to filter chunks to the relevant module and general content
-            top_k: Number of chunks to retrieve
+            query:   The user's question.
+            module:  Accepted but unused (kept for API compatibility).
+            top_k:   Number of chunks to return.
 
         Returns:
-            List of dicts with 'content', 'source', 'module', 'score'
+            List of dicts with keys: content, source, module, chunk_index, score.
         """
         self._ensure_initialized()
 
-        # Generate query embedding
+        # ------------------------------------------------------------------ #
+        # 1. Dense vector search (full corpus — no module filter)
+        # ------------------------------------------------------------------ #
         query_embedding = self._embedding_service.embed_query(query)
 
-        # Filter by module when provided: include module-specific chunks AND general chunks.
-        # This avoids returning irrelevant context from unrelated modules.
-        where_filter = None
-        if module and module != "general":
-            where_filter = {"module": {"$in": [module, "general"]}}
+        candidate_k = min(top_k * 4, 60)  # wider pool so RRF has enough material
 
-        results = self._collection.query(
+        dense_raw = self._collection.query(
             query_embeddings=[query_embedding],
-            n_results=top_k,
+            n_results=candidate_k,
             include=["documents", "metadatas", "distances"],
-            where=where_filter,
         )
 
-        # If module filter returned no results, retry without filter
-        if where_filter and (not results["documents"] or not results["documents"][0]):
-            logger.info(
-                f"No chunks found for module '{module}', retrying without module filter"
-            )
-            results = self._collection.query(
-                query_embeddings=[query_embedding],
-                n_results=top_k,
-                include=["documents", "metadatas", "distances"],
-            )
-
-        # Format results
-        chunks = []
-        if results["documents"] and results["documents"][0]:
-            for i, doc in enumerate(results["documents"][0]):
-                metadata = results["metadatas"][0][i] if results["metadatas"] else {}
-                distance = results["distances"][0][i] if results["distances"] else 0
-
-                # Convert distance to similarity score (ChromaDB uses cosine distance)
-                # Cosine distance = 1 - cosine_similarity, so similarity = 1 - distance
-                similarity = max(0, 1 - distance)
-
-                chunks.append({
+        dense_ranked: List[dict] = []
+        if dense_raw["documents"] and dense_raw["documents"][0]:
+            for i, doc in enumerate(dense_raw["documents"][0]):
+                meta = dense_raw["metadatas"][0][i] if dense_raw["metadatas"] else {}
+                dist = dense_raw["distances"][0][i] if dense_raw["distances"] else 0.0
+                dense_ranked.append({
                     "content": doc,
-                    "source": metadata.get("source", "unknown"),
-                    "module": metadata.get("module", "general"),
-                    "chunk_index": metadata.get("chunk_index", 0),
-                    "score": round(similarity, 4),
+                    "source": meta.get("source", "unknown"),
+                    "module": meta.get("module", "general"),
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "score": round(max(0.0, 1.0 - dist), 4),
                 })
 
-        logger.debug(f"Retrieved {len(chunks)} chunks for query: '{query[:50]}...'")
+        # If no BM25 index is available, return dense-only results
+        if self._bm25_index is None:
+            return dense_ranked[:top_k]
 
-        return chunks
+        # ------------------------------------------------------------------ #
+        # 2. BM25 keyword search (full corpus — no module filter)
+        # ------------------------------------------------------------------ #
+        import numpy as np
+
+        tokenized_query = self._tokenize(query)
+        bm25_raw_scores = self._bm25_index.get_scores(tokenized_query)
+
+        # Statistical threshold: only chunks with score > mean + 1*std qualify.
+        # This filters out low-quality keyword matches (e.g. chunks that merely
+        # share generic academic vocabulary) which otherwise introduce noise via RRF.
+        scores_arr = bm25_raw_scores[bm25_raw_scores > 0] if hasattr(bm25_raw_scores, '__len__') else []
+        if len(scores_arr) > 1:
+            bm25_threshold = float(np.mean(scores_arr) + np.std(scores_arr))
+        else:
+            bm25_threshold = 0.0
+
+        bm25_ranked: List[dict] = sorted(
+            [
+                {
+                    "content": self._bm25_docs[i],
+                    "source": self._bm25_metas[i].get("source", "unknown"),
+                    "module": self._bm25_metas[i].get("module", "general"),
+                    "chunk_index": self._bm25_metas[i].get("chunk_index", 0),
+                    "score": float(bm25_raw_scores[i]),
+                }
+                for i in range(len(self._bm25_docs))
+                if bm25_raw_scores[i] > bm25_threshold
+            ],
+            key=lambda x: x["score"],
+            reverse=True,
+        )[:candidate_k]
+
+        # ------------------------------------------------------------------ #
+        # 3. Weighted Reciprocal Rank Fusion
+        # ------------------------------------------------------------------ #
+        # Dense vector gets 70% weight, BM25 gets 30%.
+        # Dense search handles semantic understanding (dominant signal).
+        # BM25 provides a targeted boost for keyword-specific failures (Q001-type).
+        DENSE_WEIGHT = 0.7
+        BM25_WEIGHT = 0.3
+
+        rrf_scores: Dict[str, float] = {}
+        chunk_store: Dict[str, dict] = {}
+
+        def _key(chunk: dict) -> str:
+            """Stable deduplication key: source file + position in document."""
+            return f"{chunk['source']}::{chunk['chunk_index']}"
+
+        for rank, chunk in enumerate(dense_ranked):
+            k = _key(chunk)
+            rrf_scores[k] = rrf_scores.get(k, 0.0) + DENSE_WEIGHT / (RRF_K + rank + 1)
+            chunk_store[k] = chunk
+
+        for rank, chunk in enumerate(bm25_ranked):
+            k = _key(chunk)
+            rrf_scores[k] = rrf_scores.get(k, 0.0) + BM25_WEIGHT / (RRF_K + rank + 1)
+            if k not in chunk_store:
+                chunk_store[k] = chunk
+
+        sorted_keys = sorted(rrf_scores, key=lambda k: rrf_scores[k], reverse=True)
+
+        final_chunks = []
+        for k in sorted_keys[:top_k]:
+            chunk = chunk_store[k].copy()
+            chunk["score"] = round(rrf_scores[k], 4)
+            final_chunks.append(chunk)
+
+        logger.debug(
+            f"Hybrid retrieval: {len(dense_ranked)} dense + {len(bm25_ranked)} BM25 "
+            f"(threshold={bm25_threshold:.2f}) → {len(final_chunks)} final "
+            f"(query: '{query[:50]}')"
+        )
+
+        return final_chunks
 
     def get_context_for_query(
         self,
@@ -151,19 +266,18 @@ class RAGRetriever:
         Get formatted context string for LLM prompt.
 
         Args:
-            query: The user's question
-            module: Optional module filter
-            top_k: Number of chunks to retrieve
+            query:  The user's question.
+            module: Optional module filter.
+            top_k:  Number of chunks to retrieve.
 
         Returns:
-            Formatted context string with sources
+            Formatted context string with sources.
         """
         chunks = self.retrieve(query, module, top_k)
 
         if not chunks:
             return self._get_fallback_context(module)
 
-        # Format context with sources
         context_parts = []
         sources = set()
 
@@ -180,7 +294,7 @@ class RAGRetriever:
 FUENTES: {source_list}"""
 
     def _get_fallback_context(self, module: Optional[str] = None) -> str:
-        """Return fallback context when no relevant chunks found."""
+        """Return fallback context when no relevant chunks are found."""
         base_context = """
 Universidad El Bosque - Curso: "En sus marcas, listos, ¡RAC!"
 Enfoque: Diseño curricular centrado en el estudiante
@@ -197,11 +311,13 @@ Objetivo: Fortalecer competencias pedagógicas en diseño de microcurrículos
         }
 
         hint = module_hints.get(module, "")
-
         return f"{base_context}\n{hint}".strip()
 
 
-# Global instance
+# ---------------------------------------------------------------------------
+# Singleton
+# ---------------------------------------------------------------------------
+
 _retriever = None
 
 
@@ -216,9 +332,7 @@ def get_rag_retriever() -> RAGRetriever:
 def reset_rag_retriever():
     """
     Reset the RAG retriever singleton.
-
-    Call this after re-indexing to force the retriever to
-    reconnect to the new ChromaDB collection.
+    Call this after re-indexing to force reconnect and rebuild the BM25 index.
     """
     global _retriever
     if _retriever is not None:
@@ -226,4 +340,7 @@ def reset_rag_retriever():
         _retriever._initialized = False
         _retriever._collection = None
         _retriever._client = None
+        _retriever._bm25_index = None
+        _retriever._bm25_docs = []
+        _retriever._bm25_metas = []
     _retriever = None
