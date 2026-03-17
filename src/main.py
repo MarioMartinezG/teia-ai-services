@@ -28,8 +28,11 @@ from models import (
     FailedFileInfo,
     IndexingTaskResponse,
     IndexingStartResponse,
+    ActivityValidationRequest,
+    ActivityValidationResponse,
+    EvaluationValidationRequest,
 )
-from services.ollama_service import generate_response, check_ollama_health
+from services.ollama_service import generate_response, check_ollama_health, validate_learning_activity, validate_evaluation_design
 from services.rag_retriever import get_rag_retriever
 from services.indexing_service import get_indexing_service
 from utils.logger import get_logger
@@ -358,6 +361,197 @@ async def ask_question(request: QuestionRequest):
 
     except Exception as e:
         logger.error(f"Error processing question: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error interno del servidor: {str(e)}"
+        )
+
+
+# =============================================================================
+# Activity Validation Endpoint
+# =============================================================================
+
+def _parse_activity_verdict(raw: str) -> tuple[str, str]:
+    """Parse the LLM validation response into (verdict, justification)."""
+    lines = raw.strip().split("\n")
+    verdict = "PARCIALMENTE COHERENTE"
+    justification_start = 0
+
+    for i, line in enumerate(lines):
+        if line.strip().upper().startswith("VEREDICTO:"):
+            verdict_text = line.split(":", 1)[1].strip().upper()
+            if "NO COHERENTE" in verdict_text:
+                verdict = "NO COHERENTE"
+            elif "PARCIALMENTE" in verdict_text:
+                verdict = "PARCIALMENTE COHERENTE"
+            elif "COHERENTE" in verdict_text:
+                verdict = "COHERENTE"
+            justification_start = i + 1
+            break
+
+    justification = "\n".join(lines[justification_start:]).strip()
+    return verdict, justification
+
+
+@app.post("/validate-activity", response_model=ActivityValidationResponse)
+async def validate_activity(request: ActivityValidationRequest):
+    """
+    Validate whether a learning activity's dimension, methodology, and description
+    are coherent within the curriculum design framework.
+
+    Uses RAG to retrieve relevant context from the 'Actividades de Aprendizaje'
+    module, then asks the LLM to evaluate consistency and provide a structured verdict.
+    """
+    start_time = time.time()
+
+    logger.info(
+        f"Activity validation - user_id: {request.user_id}, "
+        f"dimension: '{request.dimension[:40]}'"
+    )
+
+    try:
+        retriever = get_rag_retriever()
+
+        rag_query = f"actividades de aprendizaje {request.dimension} {request.metodologia}"
+        retrieved_chunks = retriever.retrieve(
+            query=rag_query,
+            module="actividades_aprendizaje",
+            top_k=4
+        )
+
+        if retrieved_chunks:
+            parts = [f"[Fragmento {i + 1}]\n{c['content']}" for i, c in enumerate(retrieved_chunks)]
+            context = "\n\n".join(parts)
+        else:
+            context = "No se encontró contexto específico sobre actividades de aprendizaje."
+
+        sources = list({c["source"] for c in retrieved_chunks}) if retrieved_chunks else []
+
+        raw_response = await validate_learning_activity(
+            resultado_aprendizaje=request.resultado_aprendizaje,
+            dimension=request.dimension,
+            metodologia=request.metodologia,
+            descripcion=request.descripcion,
+            context=context,
+        )
+
+        if "VEREDICTO:" not in raw_response.upper():
+            raise HTTPException(status_code=503, detail=raw_response)
+
+        verdict, justification = _parse_activity_verdict(raw_response)
+
+        processing_time_ms = int((time.time() - start_time) * 1000)
+
+        _log_interaction({
+            "timestamp": datetime.utcnow().isoformat(),
+            "user_id": request.user_id,
+            "session_id": request.session_id,
+            "module": "actividades_aprendizaje",
+            "type": "activity_validation",
+            "dimension": request.dimension,
+            "metodologia": request.metodologia,
+            "descripcion": request.descripcion,
+            "verdict": verdict,
+            "sources": sources,
+            "processing_time_ms": processing_time_ms,
+        })
+
+        return ActivityValidationResponse(
+            verdict=verdict,
+            justification=justification,
+            sources=sources,
+            model_used=settings.OLLAMA_MODEL,
+            processing_time_ms=processing_time_ms,
+        )
+
+    except Exception as e:
+        logger.error(f"Error validating activity: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error interno del servidor: {str(e)}"
+        )
+
+
+@app.post("/validate-evaluation", response_model=ActivityValidationResponse)
+async def validate_evaluation(request: EvaluationValidationRequest):
+    """
+    Validate whether an evaluation design is coherent with its learning outcome,
+    the associated learning activity, and internally consistent across its own
+    components (type, moment, actors, means, techniques, instruments).
+    """
+    start_time = time.time()
+
+    logger.info(
+        f"Evaluation validation - user_id: {request.user_id}, "
+        f"tipo: '{request.tipo}', momento: '{request.momento}'"
+    )
+
+    try:
+        retriever = get_rag_retriever()
+
+        rag_query = f"evaluación {request.tipo} {request.momento} {request.actores} resultados de aprendizaje diseño curricular"
+        retrieved_chunks = retriever.retrieve(
+            query=rag_query,
+            module="evaluacion",
+            top_k=4
+        )
+
+        if retrieved_chunks:
+            parts = [f"[Fragmento {i + 1}]\n{c['content']}" for i, c in enumerate(retrieved_chunks)]
+            context = "\n\n".join(parts)
+        else:
+            context = "No se encontró contexto específico sobre diseño de evaluación."
+
+        sources = list({c["source"] for c in retrieved_chunks}) if retrieved_chunks else []
+
+        raw_response = await validate_evaluation_design(
+            resultado_aprendizaje=request.resultado_aprendizaje,
+            dimension=request.dimension,
+            metodologia=request.metodologia,
+            descripcion_actividad=request.descripcion_actividad,
+            descripcion_evaluacion=request.descripcion_evaluacion,
+            tipo=request.tipo,
+            momento=request.momento,
+            actores=request.actores,
+            medios=request.medios,
+            tecnicas=request.tecnicas,
+            instrumentos=request.instrumentos,
+            context=context,
+        )
+
+        if "VEREDICTO:" not in raw_response.upper():
+            raise HTTPException(status_code=503, detail=raw_response)
+
+        verdict, justification = _parse_activity_verdict(raw_response)
+
+        processing_time_ms = int((time.time() - start_time) * 1000)
+
+        _log_interaction({
+            "timestamp": datetime.utcnow().isoformat(),
+            "user_id": request.user_id,
+            "session_id": request.session_id,
+            "module": "evaluacion",
+            "type": "evaluation_validation",
+            "tipo": request.tipo,
+            "momento": request.momento,
+            "actores": request.actores,
+            "verdict": verdict,
+            "sources": sources,
+            "processing_time_ms": processing_time_ms,
+        })
+
+        return ActivityValidationResponse(
+            verdict=verdict,
+            justification=justification,
+            sources=sources,
+            model_used=settings.OLLAMA_MODEL,
+            processing_time_ms=processing_time_ms,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error validating evaluation: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Error interno del servidor: {str(e)}"

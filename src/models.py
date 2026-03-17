@@ -138,3 +138,51 @@ class IndexingStartResponse(BaseModel):
     task_id: str
     status: str
     message: str
+
+
+# Activity Validation Models
+
+class ActivityValidationRequest(BaseModel):
+    """Request model for validating a learning activity."""
+    resultado_aprendizaje: str  # The overarching learning outcome this activity derives from
+    dimension: str              # e.g., "Cognitiva - Conocimiento"
+    metodologia: str            # e.g., "Aprendizaje Basado en Proyectos (ABP)"
+    descripcion: str            # Free-text description of the activity
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class ActivityValidationResponse(BaseModel):
+    """Response model for learning activity coherence validation."""
+    model_config = {"protected_namespaces": ()}
+
+    request_id: str = Field(default_factory=generate_uuid)
+    timestamp: str = Field(default_factory=get_timestamp)
+
+    verdict: str           # "COHERENTE" | "PARCIALMENTE COHERENTE" | "NO COHERENTE"
+    justification: str     # LLM reasoning and improvement suggestions
+    sources: List[str]
+
+    model_used: Optional[str] = None
+    processing_time_ms: Optional[int] = None
+
+
+class EvaluationValidationRequest(BaseModel):
+    """Request model for validating an evaluation design."""
+    # Context inherited from the learning activity design
+    resultado_aprendizaje: str
+    dimension: str
+    metodologia: str          # key from metodologiaLabels (e.g. 'proyectos')
+    descripcion_actividad: str
+
+    # Evaluation-specific fields
+    descripcion_evaluacion: str
+    tipo: str                 # 'sumativa' | 'formativa' | 'mixta'
+    momento: str              # 'inicial' | 'media' | 'final'
+    actores: str              # 'hetero' | 'co' | 'auto'
+    medios: List[str]         # multiple values from mediosOpciones
+    tecnicas: List[str]       # multiple values from tecnicasOpciones
+    instrumentos: List[str]   # multiple values from instrumentosOpciones
+
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
