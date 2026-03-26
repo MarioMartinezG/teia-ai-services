@@ -3,8 +3,10 @@ TEIA Tutor AI Service - Main Application
 FastAPI application for the Intelligent Tutoring System.
 """
 import json
+import random
 import re
 import time
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List
@@ -248,6 +250,42 @@ def _strip_markdown(text: str) -> str:
     return text
 
 
+def _strip_letter_format(text: str) -> str:
+    """Remove letter/email salutation and sign-off patterns from LLM responses."""
+    lines = text.strip().splitlines()
+
+    # Remove leading salutation/greeting lines, e.g.:
+    #   "Querido docente,"  "Estimado/a:"  "Docente,"  "Docente, buenos días."
+    salutation_re = re.compile(
+        r"^\s*("
+        r"(querido|estimado|estimada|apreciado|apreciada)\s+\w.*"
+        r"|docente[,.: ].*"
+        r"|docente\s*$"
+        r"|buenos?\s+(d[ií]as?|tardes?|noches?)[,.]?\s*$"
+        r"|buenas[,.]?\s*$"
+        r"|hola[,.]?\s*$"
+        r")\s*$",
+        re.IGNORECASE
+    )
+    while lines and salutation_re.match(lines[0]):
+        lines.pop(0)
+
+    # Remove trailing sign-off lines (e.g. "Atentamente,", "TEIA", "Cordialmente,")
+    signoff_re = re.compile(
+        r"^\s*(atentamente|cordialmente|saludos|un saludo|con gusto|espero|"
+        r"quedo a|quedo en|teia)[,.]?\s*$",
+        re.IGNORECASE
+    )
+    while lines and signoff_re.match(lines[-1]):
+        lines.pop()
+
+    # Also remove a bare "TEIA" or "- TEIA" as the last line
+    if lines and re.match(r"^\s*-?\s*teia\s*$", lines[-1], re.IGNORECASE):
+        lines.pop()
+
+    return "\n".join(lines).strip()
+
+
 def _log_interaction(entry: dict):
     """Append a query/response record to the JSONL interaction log."""
     try:
@@ -258,6 +296,87 @@ def _log_interaction(entry: dict):
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as exc:
         logger.warning(f"Could not write interaction log: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Conversational intent detection — short-circuits RAG+LLM for non-questions
+# ---------------------------------------------------------------------------
+
+def _normalize_text(text: str) -> str:
+    """Lowercase, remove accents, collapse whitespace."""
+    text = text.lower().strip()
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    return re.sub(r"\s+", " ", text)
+
+
+_RE_GREETING = re.compile(
+    r"^(hola+|hey|buenas?|buenos dias?|buenas tardes?|buenas noches?|"
+    r"buen dia|que tal|como estas?|como va|que hay|que hubo|"
+    r"saludos?|hi|hello)[!?,. ]*$"
+)
+_RE_FAREWELL = re.compile(
+    r"^(adios|chao|ciao|hasta luego|hasta pronto|nos vemos|bye|goodbye|"
+    r"hasta la vista|hasta manana|cuidate)[!?,. ]*$"
+)
+_RE_THANKS = re.compile(
+    r"^(gracias|muchas gracias|mil gracias|te lo agradezco|muy amable|"
+    r"genial gracias|ok gracias|listo gracias|gracias teia|perfecto gracias|"
+    r"de acuerdo gracias|entendido gracias)[!?,. ]*$"
+)
+
+
+def _classify_conversational(text: str):
+    """Return 'greeting' | 'farewell' | 'thanks' | 'noise' | None.
+
+    None means the message should go through the normal RAG+LLM pipeline.
+    Only short, purely conversational messages are classified here; mixed
+    messages like "Hola, ¿qué es un RAP?" fall through to the LLM.
+    """
+    stripped = text.strip()
+    if len(stripped) < 2:
+        return "noise"
+
+    norm = _normalize_text(stripped)
+
+    # Very short / gibberish (no real words)
+    if len(norm) <= 4 and not re.search(r"[a-z]{2,}", norm):
+        return "noise"
+
+    if _RE_GREETING.match(norm):
+        return "greeting"
+    if _RE_FAREWELL.match(norm):
+        return "farewell"
+    if _RE_THANKS.match(norm):
+        return "thanks"
+    return None
+
+
+_CONVERSATIONAL_RESPONSES: dict[str, list[str]] = {
+    "greeting": [
+        "¡Hola! Soy TEIA, tu asistente de diseño curricular. ¿En qué puedo ayudarte hoy?",
+        "¡Hola! Es un gusto saludarte. Estoy aquí para acompañarte en el diseño de tu microcurrículo. ¿Tienes alguna pregunta?",
+        "¡Hola! Soy TEIA. Cuéntame, ¿en qué módulo estás trabajando o qué duda tienes?",
+    ],
+    "farewell": [
+        "¡Hasta luego! Ha sido un gusto acompañarte. Cuando tengas más preguntas, aquí estaré.",
+        "¡Que te vaya muy bien! Recuerda que puedes consultarme cuando lo necesites.",
+    ],
+    "thanks": [
+        "¡Con gusto! Si tienes más preguntas sobre el diseño de tu microcurrículo, no dudes en consultarme.",
+        "Para eso estoy. ¿Hay algo más en lo que pueda ayudarte?",
+        "¡De nada! Estoy aquí cuando lo necesites.",
+    ],
+    "noise": [
+        "No estoy segura de entender ese mensaje. ¿Podrías formular tu pregunta sobre el curso o el diseño curricular?",
+        "Hmm, no logré interpretar lo que escribiste. ¿Tienes alguna duda sobre tu microcurrículo?",
+    ],
+}
+
+
+def _get_conversational_response(intent: str) -> str:
+    options = _CONVERSATIONAL_RESPONSES.get(intent, _CONVERSATIONAL_RESPONSES["noise"])
+    return random.choice(options)
 
 
 @app.post("/ask", response_model=QuestionResponse)
@@ -279,6 +398,25 @@ async def ask_question(request: QuestionRequest):
     )
 
     try:
+        # Short-circuit: pure conversational messages bypass RAG+LLM entirely
+        conversational_intent = _classify_conversational(request.question)
+        if conversational_intent:
+            answer = _get_conversational_response(conversational_intent)
+            _add_to_history(request.session_id, request.question, answer)
+            processing_time_ms = int((time.time() - start_time) * 1000)
+            logger.info(f"Conversational short-circuit: intent={conversational_intent}")
+            return QuestionResponse(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                module=request.module,
+                answer=answer,
+                confidence=1.0,
+                sources=[],
+                suggested_actions=[],
+                model_used="conversational",
+                processing_time_ms=processing_time_ms
+            )
+
         # Get RAG retriever
         retriever = get_rag_retriever()
 
@@ -329,6 +467,7 @@ async def ask_question(request: QuestionRequest):
         )
 
         answer = _strip_markdown(answer)
+        answer = _strip_letter_format(answer)
 
         # Persist this turn so subsequent questions have context
         _add_to_history(request.session_id, request.question, answer)
