@@ -304,12 +304,15 @@ async def ask_question(request: QuestionRequest):
         # Sources: only documents that actually contributed to this response
         sources = list({c["source"] for c in retrieved_chunks}) if retrieved_chunks else ["No hay documentos indexados"]
 
-        # Calculate confidence based on retrieval scores
+        # Calculate confidence based on dense cosine similarity scores.
+        # dense_score (cosine similarity, range 0-1) is preserved by the retriever
+        # alongside the RRF fusion score. Chunks that entered only via BM25 fall
+        # back to the RRF score, which is intentionally conservative.
         if retrieved_chunks:
-            avg_score = sum(c["score"] for c in retrieved_chunks) / len(retrieved_chunks)
-            confidence = min(avg_score + 0.3, 0.95)
+            avg_dense = sum(c.get("dense_score", c["score"]) for c in retrieved_chunks) / len(retrieved_chunks)
+            confidence = round(min(avg_dense, 0.95), 2)
         else:
-            confidence = 0.5
+            confidence = 0.1
 
         # Resolve module ID to its display name for the LLM prompt
         module_display = MODULE_DISPLAY_NAMES.get(request.module, "General")
