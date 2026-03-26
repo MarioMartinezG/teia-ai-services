@@ -174,6 +174,7 @@ class RAGRetriever:
                     "module": meta.get("module", "general"),
                     "chunk_index": meta.get("chunk_index", 0),
                     "score": round(max(0.0, 1.0 - dist), 4),
+                    "dense_score": round(max(0.0, 1.0 - dist), 4),
                 })
 
         # If no BM25 index is available, return dense-only results
