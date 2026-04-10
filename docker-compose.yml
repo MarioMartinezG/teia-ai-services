@@ -1,0 +1,41 @@
+# =============================================================================
+# TEIA Tutor AI Service - Docker Compose
+# =============================================================================
+# Solo contiene el servicio de la API FastAPI.
+# Ollama se instala directamente en el pod de RunPod (no en Docker).
+#
+# Uso local (requiere Ollama corriendo en el host):
+#   docker-compose up -d
+#
+# La variable OLLAMA_URL debe apuntar al host donde corre Ollama.
+# =============================================================================
+
+services:
+  teia-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: teia-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      # Ollama - ajustar URL según donde corra Ollama
+      # En RunPod: http://localhost:11434
+      # En Docker (host): http://host.docker.internal:11434
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      - OLLAMA_FALLBACK_MODEL=${OLLAMA_FALLBACK_MODEL:-mistral:7b-instruct}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-180}
+      - OLLAMA_MAX_TOKENS=${OLLAMA_MAX_TOKENS:-1024}
+      # Server
+      - HOST=0.0.0.0
+      - PORT=8000
+      # CORS
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:4200,http://localhost:3000,http://localhost:8080}
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_JSON_LOGS=${ENABLE_JSON_LOGS:-false}
+    restart: unless-stopped

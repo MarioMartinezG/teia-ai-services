@@ -1,0 +1,71 @@
+# =============================================================================
+# Docker Ignore File for TEIA Tutor AI Service
+# =============================================================================
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+ENV
+env
+.eggs
+*.egg-info
+*.egg
+.mypy_cache
+.pytest_cache
+.coverage
+htmlcov
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.log
+logs/*.log
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Keep static files for UI
+!static/
+
+# Tests
+tests/
+test_*.py
+*_test.py
+
+# Scripts (not needed in container)
+scripts/
+
+# Development files
+.env
+.env.local
+.env.*.local
+
+# Keep data structure but ignore contents
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp
+.cache
