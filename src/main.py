@@ -191,6 +191,7 @@ SUGGESTED_ACTIONS = {
 }
 
 DEFAULT_SUGGESTED_ACTIONS = [
+    "¡Recuerda! Puedo equivocarme. Consulta el plan de trabajo de la asignatura para confirmar estas respuestas",
     "Revisa los materiales del módulo actual disponibles en el curso ¡RAC!",
     "Consulta con un tutor humano si tienes dudas conceptuales sobre el diseño",
     "Valida tu propuesta con los lineamientos curriculares de la Universidad El Bosque",
