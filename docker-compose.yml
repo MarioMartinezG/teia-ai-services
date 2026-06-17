@@ -12,9 +12,7 @@
 
 services:
   teia-api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: mmartinezg531/teia-ai-services:1.0.0
     container_name: teia-api
     ports:
       - "8000:8000"
@@ -30,6 +28,8 @@ services:
       - OLLAMA_FALLBACK_MODEL=${OLLAMA_FALLBACK_MODEL:-mistral:7b-instruct}
       - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-180}
       - OLLAMA_MAX_TOKENS=${OLLAMA_MAX_TOKENS:-1024}
+      # Data paths
+      - DATA_BASE_PATH=/app/data
       # Server
       - HOST=0.0.0.0
       - PORT=8000
@@ -37,5 +37,11 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:4200,http://localhost:3000,http://localhost:8080}
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=logs/teia_tutor.log
       - ENABLE_JSON_LOGS=${ENABLE_JSON_LOGS:-false}
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
