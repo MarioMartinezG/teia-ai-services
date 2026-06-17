@@ -1,0 +1,20 @@
+# Heavy ML/AI dependencies — installed as a separate Docker layer.
+# This file changes rarely; keep it stable to maximize layer cache hits.
+
+# === EMBEDDINGS & VECTOR STORE ===
+sentence-transformers>=2.2.2
+chromadb>=0.4.22
+
+# === LANGCHAIN ECOSYSTEM ===
+langchain-text-splitters>=0.2.0
+langchain-community>=0.0.20
+langchain-ollama>=0.1.0
+
+# === EVALUATION (RAGAS) ===
+anthropic>=0.84.0
+ragas>=0.1.0
+datasets>=2.14.0
+
+# === SCIENTIFIC / PLOTTING ===
+matplotlib>=3.7.0
+rank_bm25>=0.2.2
